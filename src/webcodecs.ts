@@ -1,5 +1,3 @@
-/// <reference lib="DOM" />
-
 import type { ExporterClass, Logger, RendererSettings } from '@motion-canvas/core/lib/app'
 import { makePlugin } from '@motion-canvas/core/lib/plugin'
 import { ObjectMetaField, type Project } from '@motion-canvas/core'
