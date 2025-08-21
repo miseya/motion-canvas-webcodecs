@@ -5,8 +5,8 @@ import { Exporter } from '@motion-canvas/core/lib/app'
 import { Output, Mp4OutputFormat, BufferTarget, CanvasSource, QUALITY_HIGH } from 'mediabunny'
 
 class WebCodecsExport implements Exporter {
-  public static readonly id = 'motion-canvas-webcodecs-exporter';
-  public static readonly displayName = 'WebCodecs';
+  public static readonly id = 'motion-canvas-webcodecs-exporter'
+  public static readonly displayName = 'WebCodecs'
 
   public static meta() {
     return new ObjectMetaField(this.name, {})
@@ -16,7 +16,7 @@ class WebCodecsExport implements Exporter {
     project: Project,
     settings: RendererSettings,
   ): Promise<WebCodecsExport> {
-    return new WebCodecsExport(project.logger, settings);
+    return new WebCodecsExport(project.logger, settings)
   }
 
   public constructor(
@@ -28,8 +28,8 @@ class WebCodecsExport implements Exporter {
   public canvasCtx?: CanvasRenderingContext2D
   public canvasSource?: CanvasSource
   public output?: Output<Mp4OutputFormat, BufferTarget>
-  public frameDuration?: number
-  public frameStart?: number
+  public frameDuration: number = 0
+  public frameStart: number = 0
 
   public async start() {
     const resolution = this.settings.size.mul(this.settings.resolutionScale)
@@ -38,7 +38,7 @@ class WebCodecsExport implements Exporter {
     this.myCanvas.width = resolution.width
     this.myCanvas.height = resolution.height
 
-    this.canvasCtx = this.myCanvas.getContext('2d')
+    this.canvasCtx = this.myCanvas.getContext('2d')!
 
     this.canvasSource = new CanvasSource(this.myCanvas, {
       codec: 'av1',
@@ -68,6 +68,12 @@ class WebCodecsExport implements Exporter {
     _sceneName: string,
     signal: AbortSignal,
   ) {
+    if (!this.canvasCtx || !this.canvasSource) {
+      console.error('Canvas context and source is lost somehow')
+      if (this.output) await this.output.cancel()
+      return
+    }
+
     if (signal.aborted) {
       // preview a bit lol
       // await this.output.cancel()
@@ -81,12 +87,21 @@ class WebCodecsExport implements Exporter {
   }
 
   public async stop() {
+    if (!this.output) {
+      this.logger.error('Output is lost before finalizing somehow')
+      return
+    }
+
     this.logger.info('Finalizing render...')
 
     if (this.output.state !== 'canceled')
       await this.output.finalize()
 
-    const blob = new Blob([this.output.target.buffer], { type: 'video/mp4' })
+    if (!this.output.target.buffer) {
+      return
+    }
+
+    const blob = new Blob([this.output.target.buffer!], { type: 'video/mp4' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
 
