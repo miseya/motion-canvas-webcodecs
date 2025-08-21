@@ -215,12 +215,12 @@ class WebCodecsExporter implements Exporter {
       const dstStart = Math.max(0, -Math.floor(calibratedStart * sampleRate))
 
       for (let channel = 0; channel < audioBuffer.numberOfChannels; channel++) {
-        const srcData = audioBuffer.getChannelData(channel).subarray(srcStart, srcEnd)
-        outputBuffer.copyToChannel(srcData, channel, dstStart)
         const input = audioBuffer.getChannelData(channel)
         const output = outputBuffer.getChannelData(channel)
-        for (let i = 0; i < input.length; i++) {
-          output[i] = input[i] * volume
+        const srcData = input.subarray(srcStart, srcEnd)
+
+        for (let i = 0; i < srcData.length; i++) {
+          output[dstStart + i] = srcData[i] * volume
         }
       }
 
