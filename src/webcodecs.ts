@@ -1,28 +1,64 @@
 import type { ExporterClass, Logger, RendererSettings } from '@motion-canvas/core/lib/app'
 import { makePlugin } from '@motion-canvas/core/lib/plugin'
-import { ObjectMetaField, type Project } from '@motion-canvas/core'
+import { BoolMetaField, EnumMetaField, NumberMetaField, ObjectMetaField, ValueOf, Project } from '@motion-canvas/core'
 import { Exporter } from '@motion-canvas/core/lib/app'
-import { Output, Mp4OutputFormat, BufferTarget, CanvasSource, QUALITY_HIGH } from 'mediabunny'
+import { Output, Mp4OutputFormat, BufferTarget, CanvasSource } from 'mediabunny'
+import * as mb from 'mediabunny'
 
-class WebCodecsExport implements Exporter {
+type WebCodecsExportOptions = ValueOf<ReturnType<typeof WebCodecsExporter.meta>>
+
+class WebCodecsExporter implements Exporter {
   public static readonly id = 'motion-canvas-webcodecs-exporter'
   public static readonly displayName = 'WebCodecs'
 
   public static meta() {
-    return new ObjectMetaField(this.name, {})
+    const videoCodec = new EnumMetaField<mb.VideoCodec>(
+      'video codec',
+      mb.VIDEO_CODECS.map((codec) => ({ text: codec, value: codec })),
+      'av1'
+    )
+
+    const quality = new EnumMetaField('quality', [
+      { text: 'very high', value: mb.QUALITY_VERY_HIGH },
+      { text: 'high', value: mb.QUALITY_HIGH },
+      { text: 'medium', value: mb.QUALITY_MEDIUM },
+      { text: 'low', value: mb.QUALITY_LOW },
+      { text: 'very low', value: mb.QUALITY_VERY_LOW },
+      { text: 'custom', value: 0 }
+    ], mb.QUALITY_HIGH)
+
+    const bitrate = new NumberMetaField('bitrate', 0)
+      .describe('in bits, obviously')
+      .disable(true)
+
+    const renderOnAbort = new BoolMetaField('render on abort', true)
+
+    // define dynamic options
+    quality.onChanged.subscribe((v) => bitrate.disable(v !== 0))
+
+    return new ObjectMetaField(this.displayName, {
+      videoCodec,
+      quality,
+      bitrate,
+      renderOnAbort,
+    })
   }
 
   public static async create(
     project: Project,
     settings: RendererSettings,
-  ): Promise<WebCodecsExport> {
-    return new WebCodecsExport(project.logger, settings)
+  ): Promise<WebCodecsExporter> {
+    return new WebCodecsExporter(project.logger, settings)
   }
+
+  private readonly options: WebCodecsExportOptions
 
   public constructor(
     private readonly logger: Logger,
     private readonly settings: RendererSettings,
-  ) { }
+  ) {
+    this.options = settings.exporter.options as WebCodecsExportOptions
+  }
 
   public myCanvas?: HTMLCanvasElement
   public canvasCtx?: CanvasRenderingContext2D
@@ -41,8 +77,8 @@ class WebCodecsExport implements Exporter {
     this.canvasCtx = this.myCanvas.getContext('2d')!
 
     this.canvasSource = new CanvasSource(this.myCanvas, {
-      codec: 'av1',
-      bitrate: QUALITY_HIGH,
+      codec: this.options.videoCodec,
+      bitrate: this.options.bitrate || this.options.quality,
     })
 
     this.output = new Output({
@@ -68,15 +104,16 @@ class WebCodecsExport implements Exporter {
     _sceneName: string,
     signal: AbortSignal,
   ) {
+    if (!this.output) return this.logger.error('Output is lost somehow')
+
     if (!this.canvasCtx || !this.canvasSource) {
       console.error('Canvas context and source is lost somehow')
-      if (this.output) await this.output.cancel()
+      await this.output.cancel()
       return
     }
 
     if (signal.aborted) {
-      // preview a bit lol
-      // await this.output.cancel()
+      if (this.options.renderOnAbort) await this.output.cancel()
       return
     }
 
@@ -98,6 +135,7 @@ class WebCodecsExport implements Exporter {
       await this.output.finalize()
 
     if (!this.output.target.buffer) {
+      this.logger.error('Output buffer is lost after finalizing somehow')
       return
     }
 
@@ -116,11 +154,11 @@ class WebCodecsExport implements Exporter {
   }
 }
 
-const WebCodecsExporter = makePlugin({
+const WebCodecsExport = makePlugin({
   name: 'WebCodecsExporter-plugin',
   exporters(): ExporterClass[] {
-    return [WebCodecsExport]
+    return [WebCodecsExporter]
   },
 })
 
-export default WebCodecsExporter
+export default WebCodecsExport
