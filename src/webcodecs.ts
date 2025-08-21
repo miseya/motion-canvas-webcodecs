@@ -7,6 +7,7 @@ import * as mb from 'mediabunny'
 
 type WebCodecsExportOptions = ValueOf<ReturnType<typeof WebCodecsExporter.meta>>
 
+// TODO: video format selection, chunked or maybe streaming video output?
 class WebCodecsExporter implements Exporter {
   public static readonly id = 'motion-canvas-webcodecs-exporter'
   public static readonly displayName = 'WebCodecs'
@@ -34,6 +35,9 @@ class WebCodecsExporter implements Exporter {
       .disable(true)
 
     const includeAudio = new BoolMetaField('include audio', true)
+
+    const audioVolume = new NumberMetaField('audio volume', 100)
+      .setRange(0, 200)
 
     const audioCodec = new EnumMetaField<mb.AudioCodec>(
       'audio codec',
@@ -64,6 +68,7 @@ class WebCodecsExporter implements Exporter {
       videoQuality,
       videoBitrate,
       includeAudio,
+      audioVolume,
       audioCodec,
       audioQuality,
       audioBitrate,
@@ -119,6 +124,10 @@ class WebCodecsExporter implements Exporter {
     this.output.addVideoTrack(this.canvasSource, {
       frameRate: this.settings.fps
     })
+
+    if (!this.project.audio) {
+      this.options.includeAudio = false
+    }
 
     if (this.options.includeAudio) {
       this.audioSource = new AudioBufferSource({
@@ -176,6 +185,7 @@ class WebCodecsExporter implements Exporter {
     // trim by start and end
     const audio = (() => {
       const audioOffset = this.project.meta.shared.audioOffset.get()
+      const volume = this.options.audioVolume / 100
       const [startSec, endSec] = this.settings.range
 
       const duration = endSec - startSec
@@ -207,6 +217,11 @@ class WebCodecsExporter implements Exporter {
       for (let channel = 0; channel < audioBuffer.numberOfChannels; channel++) {
         const srcData = audioBuffer.getChannelData(channel).subarray(srcStart, srcEnd)
         outputBuffer.copyToChannel(srcData, channel, dstStart)
+        const input = audioBuffer.getChannelData(channel)
+        const output = outputBuffer.getChannelData(channel)
+        for (let i = 0; i < input.length; i++) {
+          output[i] = input[i] * volume
+        }
       }
 
       return outputBuffer
@@ -227,7 +242,7 @@ class WebCodecsExporter implements Exporter {
 
     if (!this.options.renderOnAbort && this.output.state === 'canceled') return
 
-    if (this.options.includeAudio && this.project.audio) {
+    if (this.options.includeAudio) {
       await this.includeAudio()
     }
 
