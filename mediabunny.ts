@@ -30,12 +30,14 @@ export class WebCodecsExport implements Exporter {
   public canvasCtx?: CanvasRenderingContext2D
   public canvasSource?: CanvasSource
   public output?: Output<Mp4OutputFormat, BufferTarget>
-  public frameTime?: number
+  public frameDuration?: number
 
   public async start() {
     this.myCanvas = document.createElement('canvas')
-    this.canvasCtx = this.myCanvas.getContext('2d')
+    this.myCanvas.width = this.settings.size.width
+    this.myCanvas.height = this.settings.size.height
 
+    this.canvasCtx = this.myCanvas.getContext('2d')
     this.canvasSource = new CanvasSource(this.myCanvas, {
       codec: 'av1',
       bitrate: QUALITY_HIGH,
@@ -50,8 +52,7 @@ export class WebCodecsExport implements Exporter {
       frameRate: this.settings.fps
     })
 
-    this.frameTime = 1 / this.settings.fps
-
+    this.frameDuration = 1 / this.settings.fps
     await this.output.start()
     console.log('started export')
   }
@@ -64,13 +65,15 @@ export class WebCodecsExport implements Exporter {
     signal: AbortSignal,
   ) {
     if (signal.aborted) {
-      await this.output.cancel()
+      // why cancel if we can preview a bit lol
+      // await this.output.cancel()
       return
     }
 
+    const timestampInSecs = frame / this.settings.fps
+
     this.canvasCtx.drawImage(canvas, 0, 0)
-    this.canvasSource.add(this.frameTime, this.frameTime)
-    // this.canvasCtx.save()
+    await this.canvasSource.add(timestampInSecs, this.frameDuration)
   }
 
   public async stop() {
