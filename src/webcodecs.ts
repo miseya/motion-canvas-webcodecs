@@ -18,7 +18,7 @@ class WebCodecsExporter implements Exporter {
       { text: 'medium', value: mb.QUALITY_MEDIUM },
       { text: 'low', value: mb.QUALITY_LOW },
       { text: 'very low', value: mb.QUALITY_VERY_LOW },
-      { text: 'custom', value: 0 }
+      { text: 'custom', value: null }
     ]
 
     const videoCodec = new EnumMetaField<mb.VideoCodec>(
@@ -43,13 +43,13 @@ class WebCodecsExporter implements Exporter {
 
     const audioQuality = new EnumMetaField('audio quality', qualityEnum, mb.QUALITY_HIGH)
 
-    const audioBitrate = new NumberMetaField('audio bitrate', 24000)
+    const audioBitrate = new NumberMetaField('audio bitrate', 0)
       .describe('in bits, obviously')
       .disable(true)
 
     const renderOnAbort = new BoolMetaField('render on abort', true)
 
-    videoQuality.onChanged.subscribe((v) => videoBitrate.disable(v !== 0))
+    videoQuality.onChanged.subscribe((v) => videoBitrate.disable(v !== null))
 
     includeAudio.onChanged.subscribe((v) => {
       audioCodec.disable(!v)
@@ -57,7 +57,7 @@ class WebCodecsExporter implements Exporter {
       audioBitrate.disable(audioQuality.get() !== 0)
     })
 
-    audioQuality.onChanged.subscribe((v) => audioBitrate.disable(v !== 0))
+    audioQuality.onChanged.subscribe((v) => audioBitrate.disable(v !== null))
 
     return new ObjectMetaField(this.displayName, {
       videoCodec,
@@ -108,7 +108,7 @@ class WebCodecsExporter implements Exporter {
 
     this.canvasSource = new CanvasSource(this.myCanvas, {
       codec: this.options.videoCodec,
-      bitrate: this.options.videoBitrate || this.options.videoQuality,
+      bitrate: this.options.videoQuality || this.options.videoBitrate,
     })
 
     this.output = new Output({
@@ -123,7 +123,7 @@ class WebCodecsExporter implements Exporter {
     if (this.options.includeAudio) {
       this.audioSource = new AudioBufferSource({
         codec: this.options.audioCodec,
-        bitrate: this.options.audioBitrate || this.options.audioQuality,
+        bitrate: this.options.audioQuality || this.options.audioBitrate,
       })
 
       this.output.addAudioTrack(this.audioSource)
@@ -159,6 +159,66 @@ class WebCodecsExporter implements Exporter {
     await this.canvasSource.add(timestampInSecs, this.frameDuration)
   }
 
+  public async includeAudio() {
+    if (!this.audioSource) {
+      this.logger.error('Audio source is lost somehow')
+      return
+    }
+
+    this.logger.info('Including audio...')
+
+    // get original audio
+    const context = new AudioContext()
+    const res = await fetch(this.project.audio!)
+    const buffer = await res.arrayBuffer()
+    const audioBuffer = await context.decodeAudioData(buffer)
+
+    // trim by start and end
+    const audio = (() => {
+      const audioOffset = this.project.meta.shared.audioOffset.get()
+      const [startSec, endSec] = this.settings.range
+
+      const duration = endSec - startSec
+      if (duration <= 0) throw new Error("Invalid range")
+
+      const sampleRate = audioBuffer.sampleRate
+      const frameCount = Math.floor(duration * sampleRate)
+
+      const outputBuffer = context.createBuffer(
+        audioBuffer.numberOfChannels,
+        frameCount,
+        sampleRate
+      )
+
+      // shift requested range by offset
+      const calibratedStart = startSec - audioOffset
+      const calibratedEnd = endSec - audioOffset
+
+      // source frame positions
+      const srcStart = Math.max(0, Math.floor(calibratedStart * sampleRate))
+      const srcEnd = Math.min(
+        audioBuffer.length,
+        Math.floor(calibratedEnd * sampleRate)
+      )
+
+      // destination frame positions inside the new buffer
+      const dstStart = Math.max(0, -Math.floor(calibratedStart * sampleRate))
+
+      for (let channel = 0; channel < audioBuffer.numberOfChannels; channel++) {
+        const srcData = audioBuffer.getChannelData(channel).subarray(srcStart, srcEnd)
+        outputBuffer.copyToChannel(srcData, channel, dstStart)
+      }
+
+      return outputBuffer
+    })()
+
+    try {
+      await this.audioSource.add(audio)
+    } catch (error) {
+      this.logger.error('Failed including audio ' + String(error))
+    }
+  }
+
   public async stop() {
     if (!this.output) {
       this.logger.error('Output is lost before finalizing somehow')
@@ -167,16 +227,8 @@ class WebCodecsExporter implements Exporter {
 
     if (!this.options.renderOnAbort && this.output.state === 'canceled') return
 
-    if (this.options.includeAudio && this.project.audio && this.audioSource) {
-      this.logger.info('Including audio...')
-
-      // TODO: trim based on time
-      const context = new AudioContext()
-      const res = await fetch(this.project.audio!)
-      const buffer = await res.arrayBuffer()
-      const audio = await context.decodeAudioData(buffer)
-
-      await this.audioSource.add(audio)
+    if (this.options.includeAudio && this.project.audio) {
+      await this.includeAudio()
     }
 
     this.logger.info('Finalizing render...')
