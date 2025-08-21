@@ -6,7 +6,7 @@ import { ObjectMetaField, type Project } from '@motion-canvas/core'
 import { Exporter } from '@motion-canvas/core/lib/app'
 import { Output, Mp4OutputFormat, BufferTarget, CanvasSource, QUALITY_HIGH } from 'mediabunny'
 
-export class WebCodecsExport implements Exporter {
+class WebCodecsExport implements Exporter {
   public static readonly id = 'motion-canvas-webcodecs-exporter';
   public static readonly displayName = 'WebCodecs';
 
@@ -53,8 +53,9 @@ export class WebCodecsExport implements Exporter {
     })
 
     this.frameDuration = 1 / this.settings.fps
+
     await this.output.start()
-    console.log('started export')
+    this.logger.info('Starting export...')
   }
 
   public async handleFrame(
@@ -77,6 +78,8 @@ export class WebCodecsExport implements Exporter {
   }
 
   public async stop() {
+    this.logger.info('Finalizing render...')
+
     if (this.output.state !== 'canceled')
       await this.output.finalize()
 
@@ -91,16 +94,15 @@ export class WebCodecsExport implements Exporter {
     setTimeout(() => {
       URL.revokeObjectURL(url)
       a.remove()
-      console.log('stoped export')
     }, 1)
   }
 }
 
-const WebCodecs = makePlugin({
-  name: 'WebCodecs-plugin',
+const WebCodecsExporter = makePlugin({
+  name: 'WebCodecsExporter-plugin',
   exporters(): ExporterClass[] {
     return [WebCodecsExport]
   },
 })
 
-export default WebCodecs
+export default WebCodecsExporter
