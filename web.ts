@@ -27,37 +27,41 @@ export class WebExport implements Exporter {
 
   public restart: boolean = false
 
+  // original source
+  // https://github.com/w3c/mediacapture-record/issues/213#issuecomment-1376264577
   public async start() {
-    // this.restart = true
+    // Comment this to not reinitialize mediaRecorder
+    this.restart = true
 
-    const canvas = document.querySelector("canvas");
-    const stream = canvas.captureStream(60); // target FPS
-    const recorder = new MediaRecorder(stream, { mimeType: "video/webm; codecs=vp9" });
-    const chunks: Blob[] = [];
-
-    console.log(canvas)
-    recorder.ondataavailable = e => chunks.push(e.data);
-    recorder.onstop = () => {
-      const blob = new Blob(chunks, { type: "video/webm" });
-      const url = URL.createObjectURL(blob);
-      console.log(url)
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = "animation.webm";
-      a.click();
-    };
-
-    recorder.start()
-    this.mediaRecorder = recorder
+    // This works but its like recording in real-time (laggy)
+    // const canvas = document.querySelector("canvas");
+    // const stream = canvas.captureStream(60); // target FPS
+    // const recorder = new MediaRecorder(stream, { mimeType: "video/webm; codecs=vp9" });
+    // const chunks: Blob[] = [];
+    //
+    // console.log(canvas)
+    // recorder.ondataavailable = e => chunks.push(e.data);
+    // recorder.onstop = () => {
+    //   const blob = new Blob(chunks, { type: "video/webm" });
+    //   const url = URL.createObjectURL(blob);
+    //   console.log(url)
+    //   const a = document.createElement("a");
+    //   a.href = url;
+    //   a.download = "animation.webm";
+    //   a.click();
+    // };
+    //
+    // recorder.start()
+    // this.mediaRecorder = recorder
     console.log('started export')
   }
 
-  // https://github.com/w3c/mediacapture-record/issues/213#issuecomment-1376264577
   public myCanvas?: HTMLCanvasElement
   public dataChunks: Blob[] = []
   public stream?: MediaStream
   public track?: CanvasCaptureMediaStreamTrack
   public mediaRecorder?: MediaRecorder
+  public ctx?: CanvasRenderingContext2D
 
   public async handleFrame(
     canvas: HTMLCanvasElement,
@@ -68,57 +72,67 @@ export class WebExport implements Exporter {
   ) {
     if (signal.aborted) return
 
-    // if (this.restart) {
-    //   this.myCanvas = document.createElement('canvas')
-    //   this.myCanvas.width = 1920
-    //   this.myCanvas.width = 1080
-    //   document.body.appendChild(this.myCanvas)
-    //   this.dataChunks = []
-    //   this.stream = this.myCanvas.captureStream()
-    //   this.track = this.stream.getVideoTracks()[0] as CanvasCaptureMediaStreamTrack
-    //
-    //   // TODO: select codecs
-    //   this.mediaRecorder = new MediaRecorder(this.stream, { mimeType: 'video/webm; codecs=vp9' })
-    //   this.mediaRecorder.onerror = console.error
-    //   this.mediaRecorder.ondataavailable = (e) => this.dataChunks.push(e.data)
-    //   this.mediaRecorder.start()
-    //   this.mediaRecorder.pause()
-    //
-    //   this.restart = false
-    //   console.log('initialized variables')
-    // }
+    if (this.restart) {
+      this.myCanvas = document.createElement('canvas')
+      this.myCanvas.width = 1920
+      this.myCanvas.height = 1080
+      this.myCanvas.style.position = 'fixed'
+      this.myCanvas.style.inset = '0'
+      document.body.appendChild(this.myCanvas)
+      this.ctx = this.myCanvas.getContext('2d')
 
-    // this.mediaRecorder.resume()
-    // this.track.requestFrame()
-    // this.myCanvas.getContext('2d').drawImage(canvas, 0, 0)
-    //
-    // // wait for seconds per frame
-    // await new Promise(r => setTimeout(r, 1000 / this.settings.fps))
-    // this.mediaRecorder.pause()
-    //
-    // if (this.dataChunks.length)
-    //   console.log('DONE processing frame', frame, this.dataChunks.length)
+      this.dataChunks = []
+      this.stream = this.myCanvas.captureStream()
+      this.track = this.stream.getVideoTracks()[0] as CanvasCaptureMediaStreamTrack
+
+      // TODO: select codecs
+      this.mediaRecorder = new MediaRecorder(this.stream, { mimeType: 'video/webm; codecs=vp9' })
+      this.mediaRecorder.onerror = console.error
+      this.mediaRecorder.ondataavailable = (e) => this.dataChunks.push(e.data)
+      this.mediaRecorder.start()
+      this.mediaRecorder.pause()
+
+      this.restart = false
+      console.log('initialized variables')
+    }
+
+    this.ctx.drawImage(canvas, 0, 0)
+    this.ctx.save()
+    this.mediaRecorder.resume()
+    this.track.requestFrame()
+
+    // wait for seconds per frame
+    await new Promise(r => setTimeout(r, 1000 / this.settings.fps))
+    this.mediaRecorder.pause()
+
+    // TODO: SOMEHOW IT WONT RENDER!
+    if (this.dataChunks.length)
+      console.log('DONE processing frame', frame, this.dataChunks.length)
   }
 
   public async stop() {
     console.log('stoped export')
 
     this.mediaRecorder?.stop()
-    // this.myCanvas?.remove()
-    // this.stream?.getTracks().forEach(track => track.stop())
-    //
-    // const blob = new Blob(this.dataChunks, { type: 'video/webm' })
-    // const url = URL.createObjectURL(blob)
-    // const a = document.createElement('a')
-    //
-    // a.href = url
-    // a.download = `${this.settings.name}.webm`
-    // a.click()
-    //
-    // setTimeout(() => {
-    //   a.remove()
-    //   URL.revokeObjectURL(url)
-    // }, 1)
+    this.myCanvas?.remove()
+    this.stream?.getTracks().forEach(track => track.stop())
+
+    // skip if no chunks
+    if (!this.dataChunks.length) return
+
+    const blob = new Blob(this.dataChunks, { type: 'video/webm' })
+    const url = URL.createObjectURL(blob)
+    console.log(url)
+    const a = document.createElement('a')
+
+    a.href = url
+    a.download = `${this.settings.name}.webm`
+    a.click()
+
+    setTimeout(() => {
+      a.remove()
+      URL.revokeObjectURL(url)
+    }, 1)
   }
 }
 
