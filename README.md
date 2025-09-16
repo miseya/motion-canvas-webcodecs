@@ -1,8 +1,9 @@
 # Motion Canvas WebCodecs
 
-A blazingly fast* Motion Canvas exporter that leverages WebCodecs API for native browser rendering. The exporter has customizable options such as codecs, bitrate, and audio support. No extra back-end, no ffmpeg, just a small 10 kB package.
+A blazingly fast Motion Canvas exporter that leverages WebCodecs API for native browser rendering. The exporter has customizable options such as codecs, bitrate, and audio support. No extra back-end, no ffmpeg, just a small 10 kB package.
 
-*maybe someone could provide comparisons here :P
+
+<img width="584" height="219" alt="image" src="https://github.com/user-attachments/assets/b2658c89-974e-4dc7-8e1f-b0134deb7813" />
 
 ## Usage
 
@@ -31,7 +32,9 @@ A blazingly fast* Motion Canvas exporter that leverages WebCodecs API for native
 
 ## Preview
 
-<img width="389" height="365" alt="image" src="https://github.com/user-attachments/assets/55daacd6-bb73-44fa-b24e-8c3fe4cb7a46" />
+By default, the video will be rendered with AVC (H.264) and AAC for the audio. This setting is recommended for compatibility.
+
+<img width="389" height="365" alt="image" src="https://github.com/user-attachments/assets/8e10b865-4460-41f5-a12c-807dbf8e46a9" />
 
 ## License
 

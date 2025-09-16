@@ -28,6 +28,6 @@
     "@motion-canvas/core": "^3.17.2"
   },
   "dependencies": {
-    "mediabunny": "^1.9.3"
+    "mediabunny": "^1.15.2"
   }
 }

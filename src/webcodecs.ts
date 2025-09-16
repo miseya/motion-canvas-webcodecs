@@ -25,7 +25,7 @@ class WebCodecsExporter implements Exporter {
     const videoCodec = new EnumMetaField<mb.VideoCodec>(
       'video codec',
       mb.VIDEO_CODECS.map((codec) => ({ text: codec, value: codec })),
-      'av1'
+      'avc'
     )
 
     const videoQuality = new EnumMetaField('video quality', qualityEnum, mb.QUALITY_HIGH)
@@ -42,7 +42,7 @@ class WebCodecsExporter implements Exporter {
     const audioCodec = new EnumMetaField<mb.AudioCodec>(
       'audio codec',
       mb.AUDIO_CODECS.map((codec) => ({ text: codec, value: codec })),
-      'opus'
+      'aac'
     )
 
     const audioQuality = new EnumMetaField('audio quality', qualityEnum, mb.QUALITY_HIGH)
