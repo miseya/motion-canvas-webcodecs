@@ -107,16 +107,6 @@ class WebCodecsExporter implements Exporter {
   public frameDuration: number = 0
   public frameStart: number = 0
 
-  public forceAbort() {
-    const renderingTab = document.querySelector<HTMLDivElement>('#rendering-tab')
-    if (!renderingTab) return
-    renderingTab.click()
-
-    const button = document.querySelector<HTMLButtonElement>('#render')
-    if (!button) return
-    button.click()
-  }
-
   public async start() {
     const resolution = this.settings.size.mul(this.settings.resolutionScale)
 
@@ -135,9 +125,7 @@ class WebCodecsExporter implements Exporter {
     })
 
     if (!await mb.canEncodeVideo(videoCodec, { bitrate })) {
-      this.logger.error('The exporter does not support the current video codec settings!')
-      this.forceAbort()
-      return
+      throw 'The exporter does not support the current video codec settings!'
     }
 
     this.output = new Output({
@@ -158,9 +146,7 @@ class WebCodecsExporter implements Exporter {
       const bitrate = this.options.audioQuality || this.options.audioBitrate
 
       if (!await mb.canEncodeAudio(codec, { bitrate })) {
-        this.logger.error('The exporter does not support the current audio codec settings!')
-        this.forceAbort()
-        return
+        throw 'The exporter does not support the current video codec settings!'
       }
 
       this.audioSource = new AudioBufferSource({
