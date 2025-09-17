@@ -129,7 +129,7 @@ class WebCodecsExporter implements Exporter {
     }
 
     this.output = new Output({
-      format: new Mp4OutputFormat({ fastStart: 'fragmented' }),
+      format: new Mp4OutputFormat({ fastStart: 'in-memory' }),
       target: new BufferTarget(),
     })
 
