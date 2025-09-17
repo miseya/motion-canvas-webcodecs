@@ -1,6 +1,6 @@
 {
   "name": "motion-canvas-webcodecs",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "Fast browser video rendering using WebCodecs API for Motion Canvas",
   "homepage": "https://github.com/miseya/motion-canvas-webcodecs#readme",
   "bugs": {
