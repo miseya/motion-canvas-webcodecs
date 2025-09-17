@@ -8,6 +8,7 @@ import * as mb from 'mediabunny'
 type WebCodecsExportOptions = ValueOf<ReturnType<typeof WebCodecsExporter.meta>>
 
 // TODO: video format selection, chunked or maybe streaming video output?
+// TODO: quality enum returns object so saved setting cant be read
 class WebCodecsExporter implements Exporter {
   public static readonly id = 'motion-canvas-webcodecs-exporter'
   public static readonly displayName = 'WebCodecs'
@@ -46,7 +47,7 @@ class WebCodecsExporter implements Exporter {
     const audioCodec = new EnumMetaField<mb.AudioCodec>(
       'audio codec',
       supportedAudioCodecs.map((codec) => ({ text: codec, value: codec })),
-      'aac'
+      'opus'
     )
 
     const audioQuality = new EnumMetaField('audio quality', qualityEnum, mb.QUALITY_HIGH)
@@ -106,6 +107,16 @@ class WebCodecsExporter implements Exporter {
   public frameDuration: number = 0
   public frameStart: number = 0
 
+  public forceAbort() {
+    const renderingTab = document.querySelector<HTMLDivElement>('#rendering-tab')
+    if (!renderingTab) return
+    renderingTab.click()
+
+    const button = document.querySelector<HTMLButtonElement>('#render')
+    if (!button) return
+    button.click()
+  }
+
   public async start() {
     const resolution = this.settings.size.mul(this.settings.resolutionScale)
 
@@ -123,8 +134,9 @@ class WebCodecsExporter implements Exporter {
       bitrate,
     })
 
-    if (await mb.canEncodeVideo(videoCodec, { bitrate })) {
+    if (!await mb.canEncodeVideo(videoCodec, { bitrate })) {
       this.logger.error('The exporter does not support the current video codec settings!')
+      this.forceAbort()
       return
     }
 
@@ -145,8 +157,9 @@ class WebCodecsExporter implements Exporter {
       const codec = this.options.audioCodec
       const bitrate = this.options.audioQuality || this.options.audioBitrate
 
-      if (await mb.canEncodeAudio(codec, { bitrate })) {
+      if (!await mb.canEncodeAudio(codec, { bitrate })) {
         this.logger.error('The exporter does not support the current audio codec settings!')
+        this.forceAbort()
         return
       }
 
@@ -172,6 +185,8 @@ class WebCodecsExporter implements Exporter {
     _sceneName: string,
     signal: AbortSignal,
   ) {
+    if (signal.aborted) return
+
     if (!this.output) return this.logger.error('Output is lost somehow')
 
     if (!this.canvasCtx || !this.canvasSource) {
@@ -179,8 +194,6 @@ class WebCodecsExporter implements Exporter {
       await this.output.cancel()
       return
     }
-
-    if (signal.aborted) return
 
     const timestampInSecs = (frame - this.frameStart) / this.settings.fps
 

@@ -31,7 +31,7 @@ A blazingly fast Motion Canvas exporter that leverages WebCodecs API for native 
 
 ## Preview
 
-By default, the video will be rendered with AVC (H.264) and AAC for the audio. This setting is recommended for compatibility.
+By default, the video will be rendered with AVC (H.264) and OPUS for the audio. This setting is recommended for compatibility.
 
 <img width="389" height="365" alt="image" src="https://github.com/miseya/motion-canvas-webcodecs/blob/master/docs/settings.webp?raw=true" />
 
