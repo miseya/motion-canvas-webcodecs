@@ -22,9 +22,11 @@ class WebCodecsExporter implements Exporter {
       { text: 'custom', value: null }
     ]
 
+    const supportedVideoCodecs = mb.VIDEO_CODECS.filter((codec) => mb.canEncodeVideo(codec))
+
     const videoCodec = new EnumMetaField<mb.VideoCodec>(
       'video codec',
-      mb.VIDEO_CODECS.map((codec) => ({ text: codec, value: codec })),
+      supportedVideoCodecs.map((codec) => ({ text: codec, value: codec })),
       'avc'
     )
 
@@ -39,9 +41,11 @@ class WebCodecsExporter implements Exporter {
     const audioVolume = new NumberMetaField('audio volume', 100)
       .setRange(0, 200)
 
+    const supportedAudioCodecs = mb.AUDIO_CODECS.filter((codec) => mb.canEncodeAudio(codec))
+
     const audioCodec = new EnumMetaField<mb.AudioCodec>(
       'audio codec',
-      mb.AUDIO_CODECS.map((codec) => ({ text: codec, value: codec })),
+      supportedAudioCodecs.map((codec) => ({ text: codec, value: codec })),
       'aac'
     )
 
@@ -111,10 +115,18 @@ class WebCodecsExporter implements Exporter {
 
     this.canvasCtx = this.myCanvas.getContext('2d')!
 
+    const videoCodec = this.options.videoCodec
+    const bitrate = this.options.videoQuality || this.options.videoBitrate
+
     this.canvasSource = new CanvasSource(this.myCanvas, {
-      codec: this.options.videoCodec,
-      bitrate: this.options.videoQuality || this.options.videoBitrate,
+      codec: videoCodec,
+      bitrate,
     })
+
+    if (await mb.canEncodeVideo(videoCodec, { bitrate })) {
+      this.logger.error('The exporter does not support the current video codec settings!')
+      return
+    }
 
     this.output = new Output({
       format: new Mp4OutputFormat({ fastStart: 'fragmented' }),
@@ -130,9 +142,17 @@ class WebCodecsExporter implements Exporter {
     }
 
     if (this.options.includeAudio) {
+      const codec = this.options.audioCodec
+      const bitrate = this.options.audioQuality || this.options.audioBitrate
+
+      if (await mb.canEncodeAudio(codec, { bitrate })) {
+        this.logger.error('The exporter does not support the current audio codec settings!')
+        return
+      }
+
       this.audioSource = new AudioBufferSource({
-        codec: this.options.audioCodec,
-        bitrate: this.options.audioQuality || this.options.audioBitrate,
+        codec,
+        bitrate,
       })
 
       this.output.addAudioTrack(this.audioSource)
