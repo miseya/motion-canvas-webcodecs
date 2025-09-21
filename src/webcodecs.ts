@@ -99,6 +99,7 @@ class WebCodecsExporter implements Exporter {
     this.options = settings.exporter.options as WebCodecsExportOptions
   }
 
+  public abortSignal?: AbortSignal
   public myCanvas?: HTMLCanvasElement
   public canvasCtx?: CanvasRenderingContext2D
   public canvasSource?: CanvasSource
@@ -171,10 +172,7 @@ class WebCodecsExporter implements Exporter {
     _sceneName: string,
     signal: AbortSignal,
   ) {
-    if (signal.aborted) {
-      if (!this.options.renderOnAbort) await this.output?.cancel()
-      return
-    }
+    if (!this.abortSignal) this.abortSignal = signal
 
     if (!this.output) return this.logger.error('Output is lost somehow')
 
@@ -262,7 +260,10 @@ class WebCodecsExporter implements Exporter {
       return
     }
 
-    if (this.output.state === 'canceled') return
+    if (
+      (!this.options.renderOnAbort && this.abortSignal?.aborted) ||
+      this.output.state === 'canceled'
+    ) return
 
     if (this.options.includeAudio) {
       await this.includeAudio()
