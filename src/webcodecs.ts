@@ -171,7 +171,10 @@ class WebCodecsExporter implements Exporter {
     _sceneName: string,
     signal: AbortSignal,
   ) {
-    if (signal.aborted) return
+    if (signal.aborted) {
+      if (!this.options.renderOnAbort) await this.output?.cancel()
+      return
+    }
 
     if (!this.output) return this.logger.error('Output is lost somehow')
 
@@ -259,7 +262,7 @@ class WebCodecsExporter implements Exporter {
       return
     }
 
-    if (!this.options.renderOnAbort && this.output.state === 'canceled') return
+    if (this.output.state === 'canceled') return
 
     if (this.options.includeAudio) {
       await this.includeAudio()
