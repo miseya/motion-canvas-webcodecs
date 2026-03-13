@@ -3,7 +3,6 @@ import type {
   Logger,
   RendererSettings,
 } from "@motion-canvas/core/lib/app";
-import type { Sound } from "@motion-canvas/core/lib/scenes";
 import { makePlugin } from "@motion-canvas/core/lib/plugin";
 import {
   BoolMetaField,
@@ -22,6 +21,20 @@ import {
   CanvasSource,
 } from "mediabunny";
 import * as mb from "mediabunny";
+
+/**
+ * Taken from motion-canvas alpha for compatibility
+ */
+interface Sound {
+  audio: string;
+  start?: number;
+  end?: number;
+  gain?: number;
+  detune?: number;
+  playbackRate?: number;
+  offset: number;
+  realPlaybackRate: number;
+};
 
 type WebCodecsExportOptions = ValueOf<
   ReturnType<typeof WebCodecsExporter.meta>
@@ -92,11 +105,11 @@ class WebCodecsExporter implements Exporter {
 
     const renderOnAbort = new BoolMetaField("render on abort", true);
 
-    videoQuality.onChanged.subscribe((v) => videoBitrate.disable(v !== null));
+    videoQuality.onChanged.subscribe((v: mb.Quality | null) => videoBitrate.disable(v !== null));
 
     // Audio codec/quality options are always enabled since sound effects may be present\n    // even when project audio is not included
 
-    audioQuality.onChanged.subscribe((v) => audioBitrate.disable(v !== null));
+    audioQuality.onChanged.subscribe((v: mb.Quality | null) => audioBitrate.disable(v !== null));
 
     return new ObjectMetaField(this.displayName, {
       videoCodec,
@@ -142,7 +155,7 @@ class WebCodecsExporter implements Exporter {
   private sounds: Sound[] = [];
   private renderDuration: number = 0;
 
-  public async start(sounds: Sound[], duration: number) {
+  public async start(sounds: Sound[] = [], duration: number = 0) {
     // Store sounds for later mixing
     this.sounds = sounds;
     this.renderDuration = duration;
