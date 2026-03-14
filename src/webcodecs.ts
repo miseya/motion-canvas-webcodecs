@@ -41,18 +41,17 @@ type WebCodecsExportOptions = ValueOf<
 >;
 
 // TODO: video format selection, chunked or maybe streaming video output?
-// TODO: quality enum returns object so saved setting cant be read
 class WebCodecsExporter implements Exporter {
   public static readonly id = "motion-canvas-webcodecs-exporter";
   public static readonly displayName = "WebCodecs";
 
   public static meta() {
     const qualityEnum = [
-      { text: "very high", value: mb.QUALITY_VERY_HIGH },
-      { text: "high", value: mb.QUALITY_HIGH },
-      { text: "medium", value: mb.QUALITY_MEDIUM },
-      { text: "low", value: mb.QUALITY_LOW },
-      { text: "very low", value: mb.QUALITY_VERY_LOW },
+      { text: "very high", value: 4 },
+      { text: "high", value: 3 },
+      { text: "medium", value: 2 },
+      { text: "low", value: 1 },
+      { text: "very low", value: 0 },
       { text: "custom", value: null },
     ];
 
@@ -69,7 +68,7 @@ class WebCodecsExporter implements Exporter {
     const videoQuality = new EnumMetaField(
       "video quality",
       qualityEnum,
-      mb.QUALITY_HIGH,
+      2,
     );
 
     const videoBitrate = new NumberMetaField("video bitrate", 0)
@@ -96,7 +95,7 @@ class WebCodecsExporter implements Exporter {
     const audioQuality = new EnumMetaField(
       "audio quality",
       qualityEnum,
-      mb.QUALITY_HIGH,
+      2,
     );
 
     const audioBitrate = new NumberMetaField("audio bitrate", 0)
@@ -105,11 +104,11 @@ class WebCodecsExporter implements Exporter {
 
     const renderOnAbort = new BoolMetaField("render on abort", true);
 
-    videoQuality.onChanged.subscribe((v: mb.Quality | null) => videoBitrate.disable(v !== null));
+    videoQuality.onChanged.subscribe((v) => videoBitrate.disable(v !== null));
 
     // Audio codec/quality options are always enabled since sound effects may be present\n    // even when project audio is not included
 
-    audioQuality.onChanged.subscribe((v: mb.Quality | null) => audioBitrate.disable(v !== null));
+    audioQuality.onChanged.subscribe((v) => audioBitrate.disable(v !== null));
 
     return new ObjectMetaField(this.displayName, {
       videoCodec,
@@ -122,6 +121,18 @@ class WebCodecsExporter implements Exporter {
       audioBitrate,
       renderOnAbort,
     });
+  }
+
+  private qualityOrBitrate(quality: number | null, bitrate: number): mb.Quality | number {
+    switch (quality) {
+      case 0: return mb.QUALITY_VERY_LOW
+      case 1: return mb.QUALITY_LOW
+      case 2: return mb.QUALITY_MEDIUM
+      case 3: return mb.QUALITY_HIGH
+      case 4: return mb.QUALITY_VERY_HIGH
+    }
+
+    return bitrate
   }
 
   public static async create(
@@ -169,7 +180,7 @@ class WebCodecsExporter implements Exporter {
     this.canvasCtx = this.myCanvas.getContext("2d")!;
 
     const videoCodec = this.options.videoCodec;
-    const bitrate = this.options.videoQuality || this.options.videoBitrate;
+    const bitrate = this.qualityOrBitrate(this.options.videoQuality, this.options.videoBitrate)
 
     this.canvasSource = new CanvasSource(this.myCanvas, {
       codec: videoCodec,
@@ -198,7 +209,7 @@ class WebCodecsExporter implements Exporter {
 
     if (hasAnyAudio) {
       const codec = this.options.audioCodec;
-      const bitrate = this.options.audioQuality || this.options.audioBitrate;
+      const bitrate = this.qualityOrBitrate(this.options.audioQuality, this.options.audioBitrate);
 
       if (!(await mb.canEncodeAudio(codec, { bitrate }))) {
         throw "The exporter does not support the current audio codec settings!";
