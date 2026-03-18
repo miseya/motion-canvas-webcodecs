@@ -1,6 +1,6 @@
 # Motion Canvas WebCodecs
 
-A blazingly fast Motion Canvas exporter that leverages WebCodecs API for native browser rendering. The exporter has customizable options such as codecs, bitrate, and audio support. No extra back-end, no ffmpeg, just a small 10 kB package.
+A blazingly fast Motion Canvas exporter that leverages WebCodecs API with [Mediabunny](https://mediabunny.dev/) for native browser rendering. The exporter has customizable options such as codecs, bitrate, and audio support. No extra back-end, no ffmpeg, just a small 10 kB package.
 
 Now works out of the box with programmable audios in Motion Canvas `v3.18.0-alpha.0` version!
 
@@ -67,6 +67,10 @@ export default makeScene2D(function* (view) {
   yield* waitFor(2);
 });
 ```
+
+## Acknowledgements
+
+Using the WebCodecs API won't be easier without [Mediabunny](https://mediabunny.dev/). Check it out!
 
 ## License
 
