@@ -164,12 +164,11 @@ class WebCodecsExporter implements Exporter {
 
   // Programmatic sounds support
   private sounds: Sound[] = [];
-  private renderDuration: number = 0;
 
   public async start(sounds: Sound[] = [], duration: number = 0) {
     // Store sounds for later mixing
     this.sounds = sounds;
-    this.renderDuration = duration;
+    this.frameDuration = duration;
 
     const resolution = this.settings.size.mul(this.settings.resolutionScale);
 
@@ -278,7 +277,7 @@ class WebCodecsExporter implements Exporter {
 
     // Use renderDuration (frames) / fps for total duration, like FFmpeg does
     const startSec = this.settings.range[0];
-    const totalDuration = this.renderDuration / this.settings.fps;
+    const totalDuration = this.frameDuration / this.settings.fps;
 
     if (totalDuration <= 0) {
       this.logger.error("Invalid audio duration");
