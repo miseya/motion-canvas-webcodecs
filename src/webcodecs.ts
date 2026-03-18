@@ -226,7 +226,16 @@ class WebCodecsExporter implements Exporter {
     this.frameStart = this.settings.range[0] * this.settings.fps;
 
     await this.output.start();
-    this.logger.info("Starting render...");
+
+    this.logger.info({
+      message: "Starting render...",
+      object: {
+        duration: this.frameDuration,
+        fps: this.settings.fps,
+        range: this.settings.range,
+        frameStart: this.frameStart,
+      },
+    });
   }
 
   public async handleFrame(
@@ -273,14 +282,21 @@ class WebCodecsExporter implements Exporter {
       return;
     }
 
-    this.logger.info("Mixing audio...");
-
     // Use renderDuration (frames) / fps for total duration, like FFmpeg does
     const startSec = this.settings.range[0];
     const totalDuration = this.frameDuration / this.settings.fps;
 
     if (totalDuration <= 0) {
-      this.logger.error("Invalid audio duration");
+      this.logger.error({
+        message: "Invalid audio duration",
+        object: {
+          duration: this.frameDuration,
+          fps: this.settings.fps,
+          range: this.settings.range,
+          frameStart: this.frameStart,
+        },
+      });
+
       return;
     }
 
@@ -289,7 +305,7 @@ class WebCodecsExporter implements Exporter {
 
     // Add project audio as a sound only if "include project audio" is enabled
     if (this.project.audio && this.options.includeAudio) {
-      const audioOffset = this.project.meta.shared.audioOffset.get();
+      const audioOffset = this.project.meta.shared.audioOffset.get() ?? 0;
       allSounds.push({
         audio: this.project.audio,
         offset: audioOffset, // Absolute offset, will be adjusted for startSec below
@@ -298,13 +314,23 @@ class WebCodecsExporter implements Exporter {
     }
 
     if (allSounds.length === 0) {
-      this.logger.warn("No audio to include");
+      this.logger.warn("No audio to include, skipping...");
       return;
     }
 
     // Use a standard sample rate
-    const sampleRate = 48000;
+    const sampleRate = 48_000;
     const frameCount = Math.ceil(totalDuration * sampleRate);
+
+    this.logger.info({
+      message: "Mixing audio...",
+      object: {
+        allSounds,
+        audioVolume: this.options.audioVolume,
+        sampleRate,
+        frameCount,
+      },
+    });
 
     // Create offline context for mixing
     const offlineContext = new OfflineAudioContext(2, frameCount, sampleRate);
@@ -314,13 +340,15 @@ class WebCodecsExporter implements Exporter {
     for (const sound of allSounds) {
       if (!audioBuffers.has(sound.audio)) {
         try {
-          const buffer = await this.fetchAudioBuffer(
-            sound.audio,
-            offlineContext,
-          );
+          const buffer = await this.fetchAudioBuffer(sound.audio, offlineContext);
           audioBuffers.set(sound.audio, buffer);
         } catch (error) {
-          this.logger.warn(`Failed to load audio: ${sound.audio}: ${error}`);
+          const object = error as Error;
+          this.logger.warn({
+            message: `Failed to load audio ${sound.audio}: ${object?.message}`,
+            stack: object?.stack,
+            object,
+          });
         }
       }
     }
@@ -386,15 +414,31 @@ class WebCodecsExporter implements Exporter {
     }
 
     // Render the mixed audio
-    this.logger.info("Rendering mixed audio...");
-    const mixedBuffer = await offlineContext.startRendering();
+    let mixedBuffer: AudioBuffer
+
+    try {
+      this.logger.info("Rendering mixed audio...");
+      mixedBuffer = await offlineContext.startRendering();
+    } catch (error) {
+      const object = error as Error;
+      this.logger.error({
+        message: `Failed to render mixed audio: ${object?.message}`,
+        stack: object?.stack,
+        object,
+      });
+      return;
+    }
 
     // Add the mixed buffer to mediabunny
     try {
       await this.audioSource.add(mixedBuffer);
-      this.logger.info("Audio mixing complete");
     } catch (error) {
-      this.logger.error("Failed including audio: " + String(error));
+      const object = error as Error;
+      this.logger.error({
+        message: `Failed to include audio: ${object?.message}`,
+        stack: object?.stack,
+        object,
+      });
     }
   }
 
