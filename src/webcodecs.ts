@@ -161,14 +161,16 @@ class WebCodecsExporter implements Exporter {
   public output?: Output<Mp4OutputFormat, BufferTarget>;
   public frameDuration: number = 0;
   public frameStart: number = 0;
+  public frameEnd: number = 0;
 
   // Programmatic sounds support
   private sounds: Sound[] = [];
+  private renderDuration: number = 0;
 
   public async start(sounds: Sound[] = [], duration: number = 0) {
     // Store sounds for later mixing
     this.sounds = sounds;
-    this.frameDuration = duration;
+    this.renderDuration = duration;
 
     const resolution = this.settings.size.mul(this.settings.resolutionScale);
 
@@ -223,7 +225,7 @@ class WebCodecsExporter implements Exporter {
     }
 
     this.frameDuration = 1 / this.settings.fps;
-    this.frameStart = this.settings.range[0] * this.settings.fps;
+    this.frameStart = (this.settings.range[0] ?? 0) * this.settings.fps;
 
     await this.output.start();
 
@@ -259,6 +261,9 @@ class WebCodecsExporter implements Exporter {
 
     this.canvasCtx.drawImage(canvas, 0, 0);
     await this.canvasSource.add(timestampInSecs, this.frameDuration);
+
+    // Save frame end to get project's duration
+    this.frameEnd = frame;
   }
 
   /**
@@ -283,14 +288,21 @@ class WebCodecsExporter implements Exporter {
     }
 
     // Use renderDuration (frames) / fps for total duration, like FFmpeg does
-    const startSec = this.settings.range[0];
-    const totalDuration = this.frameDuration / this.settings.fps;
+    const startSec = this.settings.range[0] ?? 0;
+    let totalDuration: number;
+
+    // Derive from start's duration on alpha version, else count manually on stable version
+    if (this.renderDuration > 0) {
+      totalDuration = this.renderDuration / this.settings.fps;
+    } else {
+      totalDuration = (this.frameEnd - this.frameStart) / this.settings.fps;
+    }
 
     if (totalDuration <= 0) {
       this.logger.error({
         message: "Invalid audio duration",
         object: {
-          duration: this.frameDuration,
+          renderDuration: this.renderDuration,
           fps: this.settings.fps,
           range: this.settings.range,
           frameStart: this.frameStart,
