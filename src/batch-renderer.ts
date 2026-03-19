@@ -71,6 +71,39 @@ export interface BatchRenderRuntimeOptions {
 }
 
 // ---------------------------------------------------------------------------
+// Utility functions
+// ---------------------------------------------------------------------------
+
+/**
+ * Calculate a reasonable segment size based on animation duration.
+ * Aims for 5-10 segments for optimal parallelism without excessive overhead.
+ *
+ * @param totalFrames Total number of frames to render
+ * @param fps Frames per second (for duration calculation)
+ * @returns Suggested segment size in frames
+ */
+export function calculateOptimalSegmentSize(
+  totalFrames: number,
+  fps: number = 30,
+): number {
+  const durationSeconds = totalFrames / fps;
+  const targetSegmentCount = 8; // Aim for 8 segments by default
+
+  // Calculate base segment size
+  let segmentSize = Math.ceil(totalFrames / targetSegmentCount);
+
+  // Clamp to reasonable bounds:
+  // Minimum 30 frames (1 second at 30fps is a reasonable minimum)
+  // Maximum 300 frames (10 seconds at 30fps prevents mega-segments)
+  segmentSize = Math.max(30, Math.min(segmentSize, 300));
+
+  // Round to nearest multiple of 10 for cleaner segment counts
+  segmentSize = Math.round(segmentSize / 10) * 10;
+
+  return segmentSize;
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -734,12 +767,27 @@ export class BatchRenderer {
       );
     }
 
+    // Suggest optimal segment size based on animation duration
+    const optimalSegmentSize = calculateOptimalSegmentSize(totalFrames, settings.fps);
+    if (this.segmentSize > optimalSegmentSize * 2) {
+      project.logger.warn({
+        message: "Batch: segment size is relatively large compared to animation duration",
+        object: {
+          userSegmentSize: this.segmentSize,
+          recommendedSegmentSize: optimalSegmentSize,
+          reason: "Large segments reduce parallelism opportunities",
+          tip: `Consider using segment size of ${optimalSegmentSize} to create more segments`,
+        },
+      });
+    }
+
     // Calculate and log render plan
     const segmentRanges = splitIntoSegments(totalFrames, this.segmentSize);
     const segmentCount = segmentRanges.length;
     const renderPlan = {
       totalFrames,
       segmentSize: this.segmentSize,
+      optimalSegmentSize,
       segmentCount,
       totalDuration: Number((totalFrames / settings.fps).toFixed(2)),
     };

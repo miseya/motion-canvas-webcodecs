@@ -1,6 +1,7 @@
 import {describe, expect, it} from "vitest";
 import type {BatchRenderSegmentResult} from "../batch-types";
 import {splitIntoSegments, validateAndOrderSegments} from "../segment-utils";
+import {calculateOptimalSegmentSize} from "../batch-renderer";
 
 function makeSegment(
   jobIndex: number,
@@ -125,5 +126,39 @@ describe("validateAndOrderSegments", () => {
         },
       ),
     ).toThrow("segment 1 failed");
+  });
+});
+
+describe("calculateOptimalSegmentSize", () => {
+  it("calculates segment size for 30fps animation", () => {
+    // 240 frames at 30fps = 8 seconds; optimal segment size should be ~30 frames
+    const segmentSize = calculateOptimalSegmentSize(240, 30);
+    expect(segmentSize).toBeGreaterThanOrEqual(30);
+    expect(segmentSize).toBeLessThanOrEqual(300);
+  });
+
+  it("respects minimum segment size of 30 frames", () => {
+    // Very short animation: 10 frames at 30fps
+    const segmentSize = calculateOptimalSegmentSize(10, 30);
+    expect(segmentSize).toBeGreaterThanOrEqual(30);
+  });
+
+  it("respects maximum segment size of 300 frames", () => {
+    // Very long animation: 10000 frames at 30fps
+    const segmentSize = calculateOptimalSegmentSize(10000, 30);
+    expect(segmentSize).toBeLessThanOrEqual(300);
+  });
+
+  it("rounds to nearest multiple of 10", () => {
+    // Segment size should be divisible by 10 for cleaner splits
+    const segmentSize = calculateOptimalSegmentSize(500, 30);
+    expect(segmentSize % 10).toBe(0);
+  });
+
+  it("handles 60fps animation", () => {
+    // 600 frames at 60fps = 10 seconds
+    const segmentSize = calculateOptimalSegmentSize(600, 60);
+    expect(segmentSize).toBeGreaterThanOrEqual(30);
+    expect(segmentSize).toBeLessThanOrEqual(300);
   });
 });
