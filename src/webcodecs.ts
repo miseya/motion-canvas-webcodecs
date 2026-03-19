@@ -21,6 +21,8 @@ import {
   CanvasSource,
 } from "mediabunny";
 import * as mb from "mediabunny";
+import {BatchRenderer, type BatchRendererOptions} from "./batch-renderer";
+import type {BatchRenderJob} from "./batch-types";
 
 /**
  * Taken from motion-canvas alpha for compatibility
@@ -104,11 +106,24 @@ class WebCodecsExporter implements Exporter {
 
     const renderOnAbort = new BoolMetaField("render on abort", true);
 
+    // --- Batch rendering ---
+    const enableBatch = new BoolMetaField("enable batch rendering", false);
+    const segmentSize = new NumberMetaField("segment size (frames)", 150)
+      .setRange(10)
+      .disable(true);
+    const maxConcurrentWorkers = new NumberMetaField("max parallel workers", 4)
+      .setRange(1, 16)
+      .disable(true);
+
     videoQuality.onChanged.subscribe((v) => videoBitrate.disable(v !== null));
-
-    // Audio codec/quality options are always enabled since sound effects may be present\n    // even when project audio is not included
-
     audioQuality.onChanged.subscribe((v) => audioBitrate.disable(v !== null));
+    enableBatch.onChanged.subscribe((v) => {
+      segmentSize.disable(!v);
+      maxConcurrentWorkers.disable(!v);
+    });
+
+    // Audio codec/quality options are always enabled since sound effects may be present
+    // even when project audio is not included
 
     return new ObjectMetaField(this.displayName, {
       videoCodec,
@@ -120,6 +135,9 @@ class WebCodecsExporter implements Exporter {
       audioQuality,
       audioBitrate,
       renderOnAbort,
+      enableBatch,
+      segmentSize,
+      maxConcurrentWorkers,
     });
   }
 
@@ -501,4 +519,6 @@ const WebCodecsExport = makePlugin({
   },
 });
 
+export {BatchRenderer};
+export type {BatchRendererOptions, BatchRenderJob};
 export default WebCodecsExport;
