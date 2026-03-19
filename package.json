@@ -25,10 +25,13 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsc"
+    "build": "tsc",
+    "test": "vitest run src/__tests__",
+    "test:watch": "vitest src/__tests__"
   },
   "devDependencies": {
-    "typescript": "^5.8.2"
+    "typescript": "^5.8.2",
+    "vitest": "^4.1.0"
   },
   "peerDependencies": {
     "@motion-canvas/core": "*"

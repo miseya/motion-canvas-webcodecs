@@ -20,5 +20,9 @@
     "lib": ["DOM", "DOM.Iterable", "ESNext"]
   },
   "include": ["src"],
-  "exclude": ["src/ignore"]
+  "exclude": [
+    "src/ignore",
+    "src/**/*.test.ts",
+    "src/**/__tests__/**"
+  ]
 }
