@@ -12,7 +12,7 @@ import {
   ValueOf,
   Project,
 } from "@motion-canvas/core";
-import { Exporter } from "@motion-canvas/core/lib/app";
+import { Exporter, RendererResult } from "@motion-canvas/core/lib/app";
 import {
   Output,
   Mp4OutputFormat,
@@ -41,6 +41,109 @@ interface Sound {
 type WebCodecsExportOptions = ValueOf<
   ReturnType<typeof WebCodecsExporter.meta>
 >;
+
+function downloadBlobAsMp4(blob: Blob, name: string): void {
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+
+  anchor.href = url;
+  anchor.download = `${name}.mp4`;
+  anchor.click();
+
+  setTimeout(() => {
+    URL.revokeObjectURL(url);
+    anchor.remove();
+  }, 1);
+}
+
+class BatchWebCodecsExporter implements Exporter {
+  private readonly logger: Logger;
+  private readonly options: WebCodecsExportOptions;
+  private abortSignal?: AbortSignal;
+
+  public constructor(
+    private readonly project: Project,
+    private readonly settings: RendererSettings,
+  ) {
+    this.logger = project.logger;
+    this.options = settings.exporter.options as WebCodecsExportOptions;
+  }
+
+  public async configuration(): Promise<RendererSettings> {
+    const oneFrame = 1 / Math.max(1, this.settings.fps);
+    const start = this.settings.range[0] ?? 0;
+
+    // Keep the outer render pass lightweight; the full range is rendered by BatchRenderer.
+    return {
+      ...this.settings,
+      range: [start, start + oneFrame],
+    };
+  }
+
+  public async start(): Promise<void> {
+    this.logger.info("Batch rendering enabled. Running segmented render pipeline...");
+  }
+
+  public async handleFrame(
+    _canvas: HTMLCanvasElement,
+    _frame: number,
+    _sceneFrame: number,
+    _sceneName: string,
+    signal: AbortSignal,
+  ): Promise<void> {
+    if (!this.abortSignal) this.abortSignal = signal;
+  }
+
+  public async stop(result: RendererResult): Promise<void> {
+    if (result === RendererResult.Error) {
+      return;
+    }
+
+    if (
+      (!this.options.renderOnAbort && this.abortSignal?.aborted) ||
+      result === RendererResult.Aborted
+    ) {
+      return;
+    }
+
+    const batchRenderer = new BatchRenderer({
+      segmentSize: this.options.segmentSize,
+      maxConcurrency: this.options.maxConcurrentWorkers,
+      onSegmentComplete: (segment, remaining) => {
+        this.logger.info({
+          message: "Batch segment complete",
+          object: {
+            segment: segment.jobIndex,
+            frameRange: segment.frameRange,
+            remaining,
+          },
+        });
+      },
+    });
+
+    try {
+      const {blob} = await batchRenderer.render(this.project, this.settings, {
+        videoCodec: this.options.videoCodec,
+        videoQuality: this.options.videoQuality,
+        videoBitrate: this.options.videoBitrate,
+        audioCodec: this.options.audioCodec,
+        audioQuality: this.options.audioQuality,
+        audioBitrate: this.options.audioBitrate,
+        includeAudio: this.options.includeAudio,
+        audioVolume: this.options.audioVolume,
+      });
+
+      downloadBlobAsMp4(blob, this.settings.name);
+    } catch (error) {
+      const object = error as Error;
+      this.logger.error({
+        message: `Batch rendering failed: ${object?.message ?? "unknown error"}`,
+        stack: object?.stack,
+        object,
+      });
+    }
+  }
+}
 
 // TODO: video format selection, chunked or maybe streaming video output?
 class WebCodecsExporter implements Exporter {
@@ -156,7 +259,12 @@ class WebCodecsExporter implements Exporter {
   public static async create(
     project: Project,
     settings: RendererSettings,
-  ): Promise<WebCodecsExporter> {
+  ): Promise<Exporter> {
+    const options = settings.exporter.options as Partial<WebCodecsExportOptions>;
+    if (options.enableBatch) {
+      return new BatchWebCodecsExporter(project, settings);
+    }
+
     return new WebCodecsExporter(project, settings);
   }
 
@@ -498,17 +606,7 @@ class WebCodecsExporter implements Exporter {
     }
 
     const blob = new Blob([this.output.target.buffer!], { type: "video/mp4" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-
-    a.href = url;
-    a.download = `${this.settings.name}.mp4`;
-    a.click();
-
-    setTimeout(() => {
-      URL.revokeObjectURL(url);
-      a.remove();
-    }, 1);
+    downloadBlobAsMp4(blob, this.settings.name);
   }
 }
 

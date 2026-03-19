@@ -8,15 +8,16 @@
 import {
   bootstrap,
   Logger,
+  MetaFile,
   PlaybackManager,
   PlaybackStatus,
   Renderer,
   SharedWebGLContext,
+  Vector2,
 } from "@motion-canvas/core";
-import type {Scene} from "@motion-canvas/core";
 import {ReadOnlyTimeEvents} from "@motion-canvas/core/lib/scenes/timeEvents";
-import {Vector2} from "@motion-canvas/core";
-import type {ProjectSettings, MetaFile, Plugin} from "@motion-canvas/core";
+import type {ProjectSettings, Plugin} from "@motion-canvas/core";
+import type {Project, RendererSettings} from "@motion-canvas/core/lib/app";
 import {
   Output,
   Mp4OutputFormat,
@@ -45,6 +46,17 @@ export interface BatchRendererOptions {
   maxConcurrency?: number;
   /** Called after each segment completes (for progress reporting). */
   onSegmentComplete?: (result: BatchRenderSegmentResult, remaining: number) => void;
+}
+
+export interface BatchRenderRuntimeOptions {
+  videoCodec: mb.VideoCodec;
+  videoQuality: number | null;
+  videoBitrate: number;
+  audioCodec: mb.AudioCodec;
+  audioQuality: number | null;
+  audioBitrate: number;
+  includeAudio: boolean;
+  audioVolume: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -92,6 +104,20 @@ async function runPool<T>(
   return results;
 }
 
+function createDetachedMetaFiles(
+  name: string,
+  projectMetaData: unknown,
+  settingsMetaData: unknown,
+) {
+  const metaFile = new MetaFile<any>(`${name}-project-meta`, false);
+  const settingsFile = new MetaFile<any>(`${name}-settings-meta`, false);
+
+  metaFile.loadData(projectMetaData as any);
+  settingsFile.loadData(settingsMetaData as any);
+
+  return {metaFile, settingsFile};
+}
+
 // ---------------------------------------------------------------------------
 // Single-segment render
 // ---------------------------------------------------------------------------
@@ -103,14 +129,20 @@ async function runPool<T>(
 async function renderSegment(
   job: BatchRenderJob,
   projectConfig: ProjectSettings,
-  metaFile: MetaFile<any>,
-  settingsFile: MetaFile<any>,
   plugins: Plugin[],
   exporterOptions: SegmentExporterOptions,
+  projectMetaData: unknown,
+  settingsMetaData: unknown,
 ): Promise<BatchRenderSegmentResult> {
   const [startFrame, endFrame] = job.frameRange;
   const startSec = startFrame / job.fps;
   const endSec = endFrame / job.fps;
+
+  const {metaFile, settingsFile} = createDetachedMetaFiles(
+    `batch-segment-${job.jobIndex}`,
+    projectMetaData,
+    settingsMetaData,
+  );
 
   const logger = new Logger();
   const project = bootstrap(
@@ -181,17 +213,32 @@ type SoundLike = {
   playbackRate?: number;
 };
 
+interface PlaybackInfo {
+  fromFrame: number;
+  toFrame: number;
+  sounds: SoundLike[];
+  audioOffset: number;
+}
+
 /**
  * Performs a full recalculate pass on the project to collect all programmatic
  * sounds across all scenes.  Used by the stitcher for centralized audio mixing.
  */
-async function collectAllSounds(
+async function resolvePlaybackInfo(
   projectConfig: ProjectSettings,
-  metaFile: MetaFile<any>,
-  settingsFile: MetaFile<any>,
   plugins: Plugin[],
   fps: number,
-): Promise<SoundLike[]> {
+  range: [number, number],
+  projectMetaData: unknown,
+  settingsMetaData: unknown,
+  logger: Logger,
+): Promise<PlaybackInfo> {
+  const {metaFile, settingsFile} = createDetachedMetaFiles(
+    "batch-playback",
+    projectMetaData,
+    settingsMetaData,
+  );
+
   const project = bootstrap(
     projectConfig.name ?? "project",
     {core: "0.0.0", two: null, ui: null, vitePlugin: null},
@@ -199,6 +246,7 @@ async function collectAllSounds(
     projectConfig,
     metaFile,
     settingsFile,
+    logger,
   );
 
   const playback = new PlaybackManager();
@@ -220,18 +268,60 @@ async function collectAllSounds(
     }),
   );
 
-  playback.setup(scenes);
-  playback.fps = fps;
-  await playback.recalculate();
+  try {
+    playback.setup(scenes);
+    playback.fps = fps;
+    await playback.recalculate();
 
-  const sounds: SoundLike[] = [];
-  for (const scene of playback.onScenesRecalculated.current) {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    sounds.push(...(scene as any).sounds.getSounds());
+    const fromFrame = Math.min(
+      playback.duration,
+      Math.max(0, status.secondsToFrames(range[0])),
+    );
+    const requestedTo = Math.min(
+      playback.duration,
+      Math.max(0, status.secondsToFrames(range[1])),
+    );
+    const toFrame = Math.max(fromFrame, requestedTo);
+
+    const sounds: SoundLike[] = [];
+    let warnedAboutMissingSounds = false;
+
+    for (const scene of playback.onScenesRecalculated.current) {
+      const sceneSounds = (scene as any).sounds;
+
+      if (!sceneSounds || typeof sceneSounds.getSounds !== "function") {
+        if (!warnedAboutMissingSounds) {
+          warnedAboutMissingSounds = true;
+          logger.warn(
+            "Batch audio fallback: scene sounds are unavailable on this Motion Canvas version. Continuing with project audio only.",
+          );
+        }
+        continue;
+      }
+
+      try {
+        const extracted = sceneSounds.getSounds();
+        if (Array.isArray(extracted)) {
+          sounds.push(...(extracted as SoundLike[]));
+        }
+      } catch (e: any) {
+        logger.warn({
+          message: "Batch audio fallback: failed to collect programmatic scene sounds.",
+          object: e,
+          stack: e?.stack,
+        });
+      }
+    }
+
+    return {
+      fromFrame,
+      toFrame,
+      sounds,
+      audioOffset: project.meta.shared.audioOffset.get() ?? 0,
+    };
+  } finally {
+    sharedGL.dispose();
   }
-
-  sharedGL.dispose();
-  return sounds;
 }
 
 // ---------------------------------------------------------------------------
@@ -311,6 +401,7 @@ async function mixFullAudio(
   projectAudioOffset: number,
   includeProjectAudio: boolean,
   totalDuration: number,
+  renderStartSec: number,
   globalVolume: number,
 ): Promise<void> {
   const allSounds = [...sounds];
@@ -355,7 +446,7 @@ async function mixFullAudio(
     src.connect(gain);
     gain.connect(offlineCtx.destination);
 
-    const soundOffset = sound.offset;
+    const soundOffset = sound.offset - renderStartSec;
     const trimStart = sound.start ?? 0;
     const trimEnd = sound.end;
     const trimDuration = trimEnd !== undefined
@@ -389,6 +480,7 @@ async function stitchSegments(
   segments: BatchRenderSegmentResult[],
   totalFrames: number,
   fps: number,
+  renderStartFrame: number,
   resolution: {width: number; height: number},
   resolutionScale: number,
   exporterOptions: SegmentExporterOptions,
@@ -450,6 +542,7 @@ async function stitchSegments(
       projectAudioOffset,
       exporterOptions.includeAudio,
       totalFrames / fps,
+      renderStartFrame / fps,
       exporterOptions.audioVolume / 100,
     );
   }
@@ -502,46 +595,89 @@ export class BatchRenderer {
   }
 
   /**
-   * Render the full animation as parallel segments and stitch into one video.
-   *
-   * @param projectConfig - Output of `makeProject()`.
-   * @param metaFile      - The project `.meta` file.
-   * @param settingsFile  - The settings meta file (from vite-plugin).
-   * @param plugins       - Resolved plugins array.
-   * @param job           - Base render settings (resolution, fps, codecs…).
-   * @param totalFrames   - Total duration of the animation in frames.
+   * Render the current project as parallel segments and stitch into one video.
    */
   public async render(
-    projectConfig: ProjectSettings,
-    metaFile: MetaFile<any>,
-    settingsFile: MetaFile<any>,
-    plugins: Plugin[],
-    job: Omit<BatchRenderJob, "jobIndex" | "frameRange">,
-    totalFrames: number,
+    project: Project,
+    settings: RendererSettings,
+    options: BatchRenderRuntimeOptions,
   ): Promise<BatchRenderResult> {
+    const projectConfig: ProjectSettings = {
+      name: project.name,
+      scenes: project.scenes,
+      plugins: project.plugins,
+      logger: project.logger,
+      audio: project.audio,
+      variables: project.variables,
+      experimentalFeatures: project.experimentalFeatures,
+    };
+
+    const projectMetaData = project.meta.get();
+    const settingsMetaData = project.settings.get();
+    const playbackInfo = await resolvePlaybackInfo(
+      projectConfig,
+      project.plugins,
+      settings.fps,
+      settings.range,
+      projectMetaData,
+      settingsMetaData,
+      project.logger,
+    );
+
+    const totalFrames = playbackInfo.toFrame - playbackInfo.fromFrame;
+    if (totalFrames <= 0) {
+      throw new Error("BatchRenderer: requested range produced no frames.");
+    }
+
+    const resolution = {
+      width: settings.size.width,
+      height: settings.size.height,
+    };
+
     const segmentRanges = splitIntoSegments(totalFrames, this.segmentSize);
+    const segmentRangesAbsolute = segmentRanges.map(([start, end]) => [
+      start + playbackInfo.fromFrame,
+      end + playbackInfo.fromFrame,
+    ] as [number, number]);
 
     // Disable per-segment audio; audio is assembled centrally during stitch.
     const segmentExporterOptions: SegmentExporterOptions = {
-      videoCodec: job.videoCodec as mb.VideoCodec,
-      videoQuality: job.videoQuality,
-      videoBitrate: job.videoBitrate,
-      audioCodec: job.audioCodec as mb.AudioCodec,
-      audioQuality: job.audioQuality,
-      audioBitrate: job.audioBitrate,
+      videoCodec: options.videoCodec,
+      videoQuality: options.videoQuality,
+      videoBitrate: options.videoBitrate,
+      audioCodec: options.audioCodec,
+      audioQuality: options.audioQuality,
+      audioBitrate: options.audioBitrate,
       includeAudio: false, // centralized audio during stitch
-      audioVolume: job.audioVolume,
+      audioVolume: options.audioVolume,
       renderOnAbort: false,
     };
 
-    const batchJobs: BatchRenderJob[] = segmentRanges.map(([start, end], i) => ({
-      ...job,
+    const batchJobs: BatchRenderJob[] = segmentRangesAbsolute.map(([start, end], i) => ({
+      fps: settings.fps,
+      resolution,
+      resolutionScale: settings.resolutionScale,
+      videoCodec: options.videoCodec,
+      videoQuality: options.videoQuality,
+      videoBitrate: options.videoBitrate,
+      audioCodec: options.audioCodec,
+      audioQuality: options.audioQuality,
+      audioBitrate: options.audioBitrate,
+      includeAudio: options.includeAudio,
+      audioVolume: options.audioVolume,
       jobIndex: i,
       frameRange: [start, end] as [number, number],
     }));
 
     const tasks = batchJobs.map(j => () =>
-      renderSegment(j, projectConfig, metaFile, settingsFile, plugins, segmentExporterOptions),
+      renderSegment(
+        j,
+        projectConfig,
+        project.plugins,
+        segmentExporterOptions,
+        projectMetaData,
+        settingsMetaData,
+      ),
     );
 
     const segmentResults = await runPool(
@@ -550,43 +686,24 @@ export class BatchRenderer {
       (result, remaining) => this.onSegmentComplete?.(result, remaining),
     );
 
-    // Collect programmatic sounds for centralized audio assembly.
-    const sounds = await collectAllSounds(
-      projectConfig,
-      metaFile,
-      settingsFile,
-      plugins,
-      job.fps,
-    );
-
-    // Get the project audio offset from a bootstrapped project.
-    const tempProject = bootstrap(
-      projectConfig.name ?? "project",
-      {core: "0.0.0", two: null, ui: null, vitePlugin: null},
-      plugins,
-      projectConfig,
-      metaFile,
-      settingsFile,
-    );
-    const audioOffset = tempProject.meta.shared.audioOffset.get() ?? 0;
-
     const finalExporterOptions: SegmentExporterOptions = {
       ...segmentExporterOptions,
-      includeAudio: job.includeAudio,
+      includeAudio: options.includeAudio,
     };
 
     const blob = await stitchSegments(
       segmentResults,
       totalFrames,
-      job.fps,
-      job.resolution,
-      job.resolutionScale,
+      settings.fps,
+      playbackInfo.fromFrame,
+      resolution,
+      settings.resolutionScale,
       finalExporterOptions,
       projectConfig.audio,
-      audioOffset,
-      sounds,
+      playbackInfo.audioOffset,
+      playbackInfo.sounds,
     );
 
-    return {blob, totalFrames, fps: job.fps};
+    return {blob, totalFrames, fps: settings.fps};
   }
 }
