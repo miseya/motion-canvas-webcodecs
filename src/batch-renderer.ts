@@ -26,9 +26,15 @@ import {
   CanvasSource,
 } from "mediabunny";
 import * as mb from "mediabunny";
-import type {BatchRenderJob, BatchRenderResult, BatchRenderSegmentResult} from "./batch-types";
+import type {
+  BatchRenderJob,
+  BatchRenderResult,
+  BatchRenderSegmentResult,
+  BatchWorkerBootstrap,
+} from "./batch-types";
 import {SegmentExporter, type SegmentExporterOptions} from "./segment-exporter";
 import {splitIntoSegments, validateAndOrderSegments} from "./segment-utils";
+import {RenderWorkerClient} from "./worker-runner";
 
 // ---------------------------------------------------------------------------
 // Public options
@@ -58,6 +64,10 @@ export interface BatchRenderRuntimeOptions {
   audioBitrate: number;
   includeAudio: boolean;
   audioVolume: number;
+  worker?: {
+    enabled: boolean;
+    bootstrap: BatchWorkerBootstrap;
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -87,6 +97,49 @@ async function runPool<T>(
     Array.from({length: Math.min(concurrency, tasks.length)}, worker),
   );
   return results;
+}
+
+async function runWorkerClientPool(
+  jobs: BatchRenderJob[],
+  concurrency: number,
+  bootstrap: BatchWorkerBootstrap,
+  onDone?: (result: BatchRenderSegmentResult, remaining: number) => void,
+): Promise<BatchRenderSegmentResult[]> {
+  if (typeof Worker === "undefined") {
+    throw new Error(
+      "BatchRenderer: worker mode requested but Worker API is unavailable in this environment.",
+    );
+  }
+
+  const workerCount = Math.min(Math.max(1, concurrency), jobs.length);
+  const clients = Array.from(
+    {length: workerCount},
+    () => new RenderWorkerClient(),
+  );
+
+  await Promise.all(clients.map(client => client.init(bootstrap)));
+
+  const results: BatchRenderSegmentResult[] = new Array(jobs.length);
+  let cursor = 0;
+  let completed = 0;
+
+  try {
+    await Promise.all(
+      clients.map(async client => {
+        while (cursor < jobs.length) {
+          const nextIndex = cursor++;
+          const result = await client.renderSegment(jobs[nextIndex]!);
+          results[nextIndex] = result;
+          completed++;
+          onDone?.(result, jobs.length - completed);
+        }
+      }),
+    );
+
+    return results;
+  } finally {
+    await Promise.allSettled(clients.map(client => client.dispose()));
+  }
 }
 
 function createDetachedMetaFiles(
@@ -668,22 +721,27 @@ export class BatchRenderer {
       frameRange: [start, end] as [number, number],
     }));
 
-    const tasks = batchJobs.map(j => () =>
-      renderSegment(
-        j,
-        projectConfig,
-        project.plugins,
-        segmentExporterOptions,
-        projectMetaData,
-        settingsMetaData,
-      ),
-    );
-
-    const segmentResults = await runPool(
-      tasks,
-      this.maxConcurrency,
-      (result, remaining) => this.onSegmentComplete?.(result, remaining),
-    );
+    const segmentResults = options.worker?.enabled
+      ? await runWorkerClientPool(
+        batchJobs,
+        this.maxConcurrency,
+        options.worker.bootstrap,
+        (result, remaining) => this.onSegmentComplete?.(result, remaining),
+      )
+      : await runPool(
+        batchJobs.map(j => () =>
+          renderSegment(
+            j,
+            projectConfig,
+            project.plugins,
+            segmentExporterOptions,
+            projectMetaData,
+            settingsMetaData,
+          ),
+        ),
+        this.maxConcurrency,
+        (result, remaining) => this.onSegmentComplete?.(result, remaining),
+      );
 
     const finalExporterOptions: SegmentExporterOptions = {
       ...segmentExporterOptions,
