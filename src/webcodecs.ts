@@ -110,10 +110,13 @@ class BatchWebCodecsExporter implements Exporter {
       segmentSize: this.options.segmentSize,
       maxConcurrency: this.options.maxConcurrentWorkers,
       onSegmentComplete: (segment, remaining) => {
+        const completed = segment.jobIndex + 1;
+        const total = completed + remaining;
+        const percent = Math.round((completed / total) * 100);
         this.logger.info({
-          message: "Batch segment complete",
+          message: `Batch segment ${completed}/${total} complete (${percent}%)`,
           object: {
-            segment: segment.jobIndex,
+            jobIndex: segment.jobIndex,
             frameRange: segment.frameRange,
             remaining,
           },
@@ -122,6 +125,14 @@ class BatchWebCodecsExporter implements Exporter {
     });
 
     try {
+      this.logger.info({
+        message: "Batch rendering: starting orchestration phase",
+        object: {
+          segmentSize: this.options.segmentSize,
+          maxConcurrentWorkers: this.options.maxConcurrentWorkers,
+        },
+      });
+
       const {blob} = await batchRenderer.render(this.project, this.settings, {
         videoCodec: this.options.videoCodec,
         videoQuality: this.options.videoQuality,
@@ -133,7 +144,21 @@ class BatchWebCodecsExporter implements Exporter {
         audioVolume: this.options.audioVolume,
       });
 
+      this.logger.info({
+        message: "Batch rendering: orchestration complete, exporting video",
+        object: {
+          videoSize: blob.size,
+        },
+      });
+
       downloadBlobAsMp4(blob, this.settings.name);
+
+      this.logger.info({
+        message: "Batch rendering: video exported and download started",
+        object: {
+          fileName: this.settings.name,
+        },
+      });
     } catch (error) {
       const object = error as Error;
       this.logger.error({
