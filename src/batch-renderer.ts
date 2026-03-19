@@ -525,10 +525,27 @@ async function stitchSegments(
   projectAudio: string | undefined,
   projectAudioOffset: number,
   sounds: SoundLike[],
+  logger: Logger,
 ): Promise<Blob> {
+  logger.info({
+    message: "Batch: segment validation starting",
+    object: {segmentCount: segments.length, expectedFrames: totalFrames},
+  });
+
   const ordered = validateAndOrderSegments(segments, {
     expectedTotalFrames: totalFrames,
     expectedStartFrame: renderStartFrame,
+  });
+
+  const actualFrames = ordered.reduce((sum, s) => sum + s.durationFrames, 0);
+  logger.info({
+    message: "Batch: segment validation passed",
+    object: {
+      segmentCount: ordered.length,
+      expectedFrames: totalFrames,
+      actualFrames,
+      coverage: actualFrames === totalFrames ? "complete" : "warning",
+    },
   });
   const realWidth = resolution.width * resolutionScale;
   const realHeight = resolution.height * resolutionScale;
@@ -576,6 +593,16 @@ async function stitchSegments(
   }
 
   if (audioSrc) {
+    logger.info({
+      message: "Batch: starting audio mixing",
+      object: {
+        hasSounds: sounds.length > 0,
+        soundCount: sounds.length,
+        hasProjectAudio,
+        totalDuration: (totalFrames / fps).toFixed(2),
+      },
+    });
+
     await mixFullAudio(
       audioSrc,
       sounds,
@@ -586,6 +613,14 @@ async function stitchSegments(
       renderStartFrame / fps,
       exporterOptions.audioVolume / 100,
     );
+
+    logger.info({
+      message: "Batch: audio mixing complete",
+      object: {
+        framesRendered: totalFrames,
+        durationSeconds: (totalFrames / fps).toFixed(2),
+      },
+    });
   }
 
   await output.finalize();
@@ -595,7 +630,18 @@ async function stitchSegments(
     throw new Error("Stitcher: output buffer is empty after finalization.");
   }
 
-  return new Blob([output.target.buffer], {type: "video/mp4"});
+  const finalBlob = new Blob([output.target.buffer], {type: "video/mp4"});
+  logger.info({
+    message: "Batch: stitching complete",
+    object: {
+      outputBytes: finalBlob.size,
+      durationFrames: totalFrames,
+      fps,
+      estimatedDuration: (totalFrames / fps).toFixed(2),
+    },
+  });
+
+  return finalBlob;
 }
 
 // ---------------------------------------------------------------------------
@@ -681,12 +727,32 @@ export class BatchRenderer {
       throw new Error("BatchRenderer: requested range produced no frames.");
     }
 
+    // Validate segment size
+    if (this.segmentSize < 10) {
+      throw new Error(
+        `BatchRenderer: segment size must be at least 10 frames, got ${this.segmentSize}.`,
+      );
+    }
+
+    // Calculate and log render plan
+    const segmentRanges = splitIntoSegments(totalFrames, this.segmentSize);
+    const segmentCount = segmentRanges.length;
+    const renderPlan = {
+      totalFrames,
+      segmentSize: this.segmentSize,
+      segmentCount,
+      totalDuration: Number((totalFrames / settings.fps).toFixed(2)),
+    };
+
+    project.logger.info({
+      message: "Batch render plan",
+      object: renderPlan,
+    });
+
     const resolution = {
       width: settings.size.width,
       height: settings.size.height,
     };
-
-    const segmentRanges = splitIntoSegments(totalFrames, this.segmentSize);
     const segmentRangesAbsolute = segmentRanges.map(([start, end]) => [
       start + playbackInfo.fromFrame,
       end + playbackInfo.fromFrame,
@@ -759,6 +825,7 @@ export class BatchRenderer {
       projectConfig.audio,
       playbackInfo.audioOffset,
       playbackInfo.sounds,
+      project.logger,
     );
 
     return {blob, totalFrames, fps: settings.fps};
