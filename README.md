@@ -37,6 +37,34 @@ By default, the video will be rendered with AVC (H.264) and OPUS for the audio. 
 
 <img width="389" height="365" alt="image" src="https://github.com/miseya/motion-canvas-webcodecs/blob/master/docs/settings.webp?raw=true" />
 
+## Batch Rendering (Experimental)
+
+Batch rendering can split the target frame range into multiple segments and render
+them in parallel before stitching a single final MP4.
+
+Configure in exporter settings:
+
+- `enable batch rendering`
+- `segment size (frames)`
+- `max parallel workers`
+
+Notes:
+
+- Batch rendering is opt-in and disabled by default.
+- Audio is mixed centrally during stitching for continuity across segment boundaries.
+- Segment rendering currently runs in the browser tab (no worker isolation yet).
+
+## Compatibility
+
+This package targets both stable and alpha Motion Canvas cores.
+
+- Stable core (`3.17.x`): project audio is supported; programmable scene sounds are
+  not available and are skipped with a warning in batch mode.
+- Alpha core (`3.18.0-alpha.0+`): project audio and programmable scene sounds are
+  both included.
+
+If a programmable-sound API is unavailable, rendering continues instead of failing.
+
 ## Programmable Audio
 
 <img alt="image" src="https://github.com/miseya/motion-canvas-webcodecs/blob/master/docs/alpha.webp?raw=true" />
