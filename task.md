@@ -21,7 +21,7 @@
 ## Phase 3: Worker Architecture
 - [ ] Implement RenderWorker (loads project, renders [start,end] range)
 - [x] Implement job input/output contracts (TypeScript types)
-- [ ] Wire project artifact loading in worker context
+- [x] Wire project artifact loading in worker context
 - [ ] Handle asset access in worker contexts (font, images, audio)
 
 ## Phase 4: Audio Strategy
