@@ -29,7 +29,7 @@
 - [x] Implement centralized audio mux step
 
 ## Phase 5: Segment Stitching
-- [ ] Implement segment validator / orderer
+- [x] Implement segment validator / orderer
 - [ ] Implement container-level concat or remux step
 - [ ] Implement final output writer using mediabunny
 
