@@ -62,3 +62,60 @@ export interface BatchRenderResult {
   totalFrames: number;
   fps: number;
 }
+
+/**
+ * Bootstrapping payload passed to a render worker.
+ *
+ * The worker imports the project module dynamically from `projectModuleUrl`.
+ */
+export interface BatchWorkerBootstrap {
+  projectModuleUrl: string;
+  projectMetaData: unknown;
+  settingsMetaData: unknown;
+}
+
+export interface RenderWorkerInitRequest {
+  type: "init";
+  requestId: string;
+  payload: BatchWorkerBootstrap;
+}
+
+export interface RenderWorkerSegmentRequest {
+  type: "render-segment";
+  requestId: string;
+  payload: {
+    job: BatchRenderJob;
+  };
+}
+
+export interface RenderWorkerDisposeRequest {
+  type: "dispose";
+  requestId: string;
+}
+
+export type RenderWorkerRequest =
+  | RenderWorkerInitRequest
+  | RenderWorkerSegmentRequest
+  | RenderWorkerDisposeRequest;
+
+export interface RenderWorkerReadyResponse {
+  type: "ready";
+  requestId: string;
+}
+
+export interface RenderWorkerSegmentResponse {
+  type: "segment-result";
+  requestId: string;
+  payload: BatchRenderSegmentResult;
+}
+
+export interface RenderWorkerErrorResponse {
+  type: "error";
+  requestId: string;
+  error: string;
+}
+
+export type RenderWorkerResponse =
+  | RenderWorkerReadyResponse
+  | RenderWorkerSegmentResponse
+  | RenderWorkerErrorResponse;
