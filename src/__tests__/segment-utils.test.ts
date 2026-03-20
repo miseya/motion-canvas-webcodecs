@@ -131,16 +131,16 @@ describe("validateAndOrderSegments", () => {
 
 describe("calculateOptimalSegmentSize", () => {
   it("calculates segment size for 30fps animation", () => {
-    // 240 frames at 30fps = 8 seconds; optimal segment size should be ~30 frames
-    const segmentSize = calculateOptimalSegmentSize(240, 30);
-    expect(segmentSize).toBeGreaterThanOrEqual(30);
+    // 240 frames at 30fps = 8 seconds
+    const segmentSize = calculateOptimalSegmentSize(240, 30, 4);
+    expect(segmentSize).toBeGreaterThanOrEqual(10);
     expect(segmentSize).toBeLessThanOrEqual(300);
   });
 
-  it("respects minimum segment size of 30 frames", () => {
+  it("never returns less than 10 frames", () => {
     // Very short animation: 10 frames at 30fps
-    const segmentSize = calculateOptimalSegmentSize(10, 30);
-    expect(segmentSize).toBeGreaterThanOrEqual(30);
+    const segmentSize = calculateOptimalSegmentSize(10, 30, 4);
+    expect(segmentSize).toBe(10);
   });
 
   it("respects maximum segment size of 300 frames", () => {
@@ -151,14 +151,21 @@ describe("calculateOptimalSegmentSize", () => {
 
   it("rounds to nearest multiple of 10", () => {
     // Segment size should be divisible by 10 for cleaner splits
-    const segmentSize = calculateOptimalSegmentSize(500, 30);
+    const segmentSize = calculateOptimalSegmentSize(500, 30, 4);
     expect(segmentSize % 10).toBe(0);
   });
 
   it("handles 60fps animation", () => {
     // 600 frames at 60fps = 10 seconds
-    const segmentSize = calculateOptimalSegmentSize(600, 60);
-    expect(segmentSize).toBeGreaterThanOrEqual(30);
-    expect(segmentSize).toBeLessThanOrEqual(300);
+    const segmentSize = calculateOptimalSegmentSize(600, 60, 4);
+    expect(segmentSize).toBeGreaterThanOrEqual(10);
+    expect(segmentSize).toBeLessThanOrEqual(600);
+  });
+
+  it("uses smaller segments when higher concurrency is requested", () => {
+    const lowConcurrency = calculateOptimalSegmentSize(1200, 30, 2);
+    const highConcurrency = calculateOptimalSegmentSize(1200, 30, 8);
+
+    expect(highConcurrency).toBeLessThanOrEqual(lowConcurrency);
   });
 });

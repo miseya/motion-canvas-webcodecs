@@ -1,7 +1,8 @@
 /**
  * Batch rendering orchestrator for Motion Canvas.
  *
- * Splits a full animation into fixed-size frame segments, renders them in
+ * Splits a full animation into automatically planned frame segments, renders
+ * them in
  * parallel using isolated {@link Renderer} instances, then stitches the
  * segments into a single final MP4.
  */
@@ -23,7 +24,10 @@ import {
   Mp4OutputFormat,
   BufferTarget,
   AudioBufferSource,
-  CanvasSource,
+  BufferSource,
+  EncodedPacketSink,
+  EncodedVideoPacketSource,
+  Input,
 } from "mediabunny";
 import * as mb from "mediabunny";
 import type {
@@ -42,8 +46,9 @@ import {RenderWorkerClient} from "./worker-runner";
 
 export interface BatchRendererOptions {
   /**
-   * Number of frames to render per segment.
-   * @default 150
+  * Deprecated. Segment sizing is now automatic and this option is ignored.
+  *
+  * Kept for compatibility with older serialized settings.
    */
   segmentSize?: number;
   /**
@@ -75,32 +80,40 @@ export interface BatchRenderRuntimeOptions {
 // ---------------------------------------------------------------------------
 
 /**
- * Calculate a reasonable segment size based on animation duration.
- * Aims for 5-10 segments for optimal parallelism without excessive overhead.
+ * Calculate a segment size that balances throughput and overhead.
+ *
+ * This planner aims to keep roughly 2x queue depth for the requested
+ * concurrency (with a minimum of 4 segments for longer renders), while
+ * avoiding very tiny segments.
  *
  * @param totalFrames Total number of frames to render
  * @param fps Frames per second (for duration calculation)
+ * @param maxConcurrency Requested parallelism budget
  * @returns Suggested segment size in frames
  */
 export function calculateOptimalSegmentSize(
   totalFrames: number,
   fps: number = 30,
+  maxConcurrency: number = 4,
 ): number {
-  const durationSeconds = totalFrames / fps;
-  const targetSegmentCount = 8; // Aim for 8 segments by default
+  const safeTotalFrames = Math.max(1, Math.floor(totalFrames));
+  const safeFps = Math.max(1, Math.floor(fps));
+  const safeConcurrency = Math.max(1, Math.floor(maxConcurrency));
 
-  // Calculate base segment size
-  let segmentSize = Math.ceil(totalFrames / targetSegmentCount);
+  const minSegmentSize = Math.max(10, safeFps);
+  const maxSegmentSize = Math.max(minSegmentSize, safeFps * 10);
+  const targetSegmentCount = Math.max(safeConcurrency * 2, 4);
 
-  // Clamp to reasonable bounds:
-  // Minimum 30 frames (1 second at 30fps is a reasonable minimum)
-  // Maximum 300 frames (10 seconds at 30fps prevents mega-segments)
-  segmentSize = Math.max(30, Math.min(segmentSize, 300));
+  let segmentSize = Math.ceil(safeTotalFrames / targetSegmentCount);
+  segmentSize = Math.max(minSegmentSize, Math.min(segmentSize, maxSegmentSize));
+  segmentSize = Math.min(segmentSize, safeTotalFrames);
 
-  // Round to nearest multiple of 10 for cleaner segment counts
-  segmentSize = Math.round(segmentSize / 10) * 10;
+  // Keep segment boundaries human-readable for logs/debugging.
+  if (segmentSize >= 20) {
+    segmentSize = Math.max(minSegmentSize, Math.round(segmentSize / 10) * 10);
+  }
 
-  return segmentSize;
+  return Math.max(10, segmentSize);
 }
 
 // ---------------------------------------------------------------------------
@@ -410,55 +423,77 @@ function qualityOrBitrate(quality: number | null, bitrate: number): mb.Quality |
   return quality !== null ? table[quality]! : bitrate;
 }
 
-/**
- * Decode an MP4 segment using an off-screen video element and feed each frame
- * into the shared canvas source for re-encoding.
- *
- * This is a frame-accurate but simple approach. A future phase can replace
- * this with container-level fMP4 concat if codec + container constraints allow.
- */
-async function decodeSegmentIntoCanvas(
-  buffer: ArrayBuffer,
-  ctx: CanvasRenderingContext2D,
-  canvasSource: CanvasSource,
+interface SegmentVideoPackets {
+  readonly jobIndex: number;
+  readonly frameRange: [number, number];
+  readonly codec: mb.VideoCodec;
+  readonly decoderConfig: VideoDecoderConfig;
+  readonly packets: mb.EncodedPacket[];
+  readonly firstTimestamp: number;
+  readonly timelineOffsetSeconds: number;
+}
+
+async function readSegmentVideoPackets(
+  segment: BatchRenderSegmentResult,
+  renderStartFrame: number,
   fps: number,
-  startAbsoluteFrame: number,
-): Promise<void> {
-  const blob = new Blob([buffer], {type: "video/mp4"});
-  const url = URL.createObjectURL(blob);
-  const video = document.createElement("video");
-  video.src = url;
-  video.muted = true;
-  video.preload = "auto";
+): Promise<SegmentVideoPackets> {
+  if (!segment.buffer || segment.buffer.byteLength === 0) {
+    throw new Error(`Stitcher: segment ${segment.jobIndex} is empty.`);
+  }
+
+  const input = new Input({
+    formats: [mb.MP4],
+    source: new BufferSource(segment.buffer),
+  });
 
   try {
-    await new Promise<void>((resolve, reject) => {
-      video.onloadedmetadata = () => resolve();
-      video.onerror = () => reject(new Error("Failed to load segment for stitching"));
-    });
-
-    const frameCount = Math.round(video.duration * fps);
-    const frameDuration = 1 / fps;
-
-    for (let i = 0; i < frameCount; i++) {
-      await new Promise<void>(resolve => {
-        const onSeeked = () => {
-          video.removeEventListener("seeked", onSeeked);
-          resolve();
-        };
-        video.addEventListener("seeked", onSeeked);
-        video.currentTime = i * frameDuration;
-      });
-
-      const absoluteFrame = startAbsoluteFrame + i;
-      const timestampSecs = absoluteFrame * frameDuration;
-
-      ctx.drawImage(video, 0, 0, ctx.canvas.width, ctx.canvas.height);
-      await canvasSource.add(timestampSecs, frameDuration);
+    const videoTrack = await input.getPrimaryVideoTrack();
+    if (!videoTrack) {
+      throw new Error(`Stitcher: segment ${segment.jobIndex} has no video track.`);
     }
+
+    const codec = videoTrack.codec;
+    if (!codec) {
+      throw new Error(`Stitcher: segment ${segment.jobIndex} video codec is unknown.`);
+    }
+
+    const decoderConfig = await videoTrack.getDecoderConfig();
+    if (!decoderConfig) {
+      throw new Error(
+        `Stitcher: segment ${segment.jobIndex} is missing decoder config metadata.`,
+      );
+    }
+
+    const packetSink = new EncodedPacketSink(videoTrack);
+    const packets: mb.EncodedPacket[] = [];
+
+    for await (const packet of packetSink.packets()) {
+      packets.push(packet);
+    }
+
+    if (packets.length === 0) {
+      throw new Error(`Stitcher: segment ${segment.jobIndex} has no encoded packets.`);
+    }
+
+    const timelineOffsetFrames = segment.frameRange[0] - renderStartFrame;
+    if (timelineOffsetFrames < 0) {
+      throw new Error(
+        `Stitcher: segment ${segment.jobIndex} starts before render range start.`,
+      );
+    }
+
+    return {
+      jobIndex: segment.jobIndex,
+      frameRange: segment.frameRange,
+      codec,
+      decoderConfig,
+      packets,
+      firstTimestamp: packets[0]!.timestamp,
+      timelineOffsetSeconds: timelineOffsetFrames / fps,
+    };
   } finally {
-    URL.revokeObjectURL(url);
-    video.remove();
+    input.dispose();
   }
 }
 
@@ -544,7 +579,7 @@ async function mixFullAudio(
 
 /**
  * Stitch all segment buffers into a single final MP4.
- * Uses per-segment video decoding + re-encode into a shared Output.
+ * Uses packet-level video remux to avoid decode/re-encode overhead.
  * Audio is mixed centrally for the full timeline.
  */
 async function stitchSegments(
@@ -552,8 +587,6 @@ async function stitchSegments(
   totalFrames: number,
   fps: number,
   renderStartFrame: number,
-  resolution: {width: number; height: number},
-  resolutionScale: number,
   exporterOptions: SegmentExporterOptions,
   projectAudio: string | undefined,
   projectAudioOffset: number,
@@ -580,25 +613,50 @@ async function stitchSegments(
       coverage: actualFrames === totalFrames ? "complete" : "warning",
     },
   });
-  const realWidth = resolution.width * resolutionScale;
-  const realHeight = resolution.height * resolutionScale;
 
-  const canvas = document.createElement("canvas");
-  canvas.width = realWidth;
-  canvas.height = realHeight;
-  const ctx = canvas.getContext("2d")!;
-
-  const videoBitrate = qualityOrBitrate(exporterOptions.videoQuality, exporterOptions.videoBitrate);
-  const canvasSource = new CanvasSource(canvas, {
-    codec: exporterOptions.videoCodec as mb.VideoCodec,
-    bitrate: videoBitrate,
+  logger.info({
+    message: "Batch: preparing packet-level video remux",
+    object: {segmentCount: ordered.length},
   });
+
+  const remuxBundles: SegmentVideoPackets[] = [];
+  let referenceCodec: mb.VideoCodec | null = null;
+  let referenceDecoderCodec: string | null = null;
+
+  for (const segment of ordered) {
+    const bundle = await readSegmentVideoPackets(segment, renderStartFrame, fps);
+
+    if (referenceCodec === null) {
+      referenceCodec = bundle.codec;
+      referenceDecoderCodec = bundle.decoderConfig.codec;
+    } else {
+      if (bundle.codec !== referenceCodec) {
+        throw new Error(
+          `Stitcher: segment ${bundle.jobIndex} codec mismatch. Expected ${referenceCodec}, got ${bundle.codec}.`,
+        );
+      }
+
+      if (bundle.decoderConfig.codec !== referenceDecoderCodec) {
+        throw new Error(
+          `Stitcher: segment ${bundle.jobIndex} decoder config mismatch.`,
+        );
+      }
+    }
+
+    remuxBundles.push(bundle);
+  }
+
+  if (!referenceCodec || remuxBundles.length === 0) {
+    throw new Error("Stitcher: no remuxable video segments were produced.");
+  }
+
+  const videoSource = new EncodedVideoPacketSource(referenceCodec);
 
   const output = new Output({
     format: new Mp4OutputFormat({fastStart: "in-memory"}),
     target: new BufferTarget(),
   });
-  output.addVideoTrack(canvasSource, {frameRate: fps});
+  output.addVideoTrack(videoSource, {frameRate: fps});
 
   const hasProjectAudio = !!projectAudio && exporterOptions.includeAudio;
   const hasSounds = sounds.length > 0;
@@ -615,14 +673,30 @@ async function stitchSegments(
 
   await output.start();
 
-  let absoluteFrame = 0;
-  for (const segment of ordered) {
-    if (!segment.buffer || segment.buffer.byteLength === 0) {
-      absoluteFrame += segment.durationFrames;
-      continue;
+  let packetCount = 0;
+  let sequenceNumber = 0;
+  let firstPacket = true;
+
+  for (const bundle of remuxBundles) {
+    for (const packet of bundle.packets) {
+      const rebasedPacket = packet.clone({
+        timestamp:
+          packet.timestamp - bundle.firstTimestamp + bundle.timelineOffsetSeconds,
+        sequenceNumber,
+      });
+
+      sequenceNumber += 1;
+      packetCount += 1;
+
+      if (firstPacket) {
+        await videoSource.add(rebasedPacket, {
+          decoderConfig: bundle.decoderConfig,
+        });
+        firstPacket = false;
+      } else {
+        await videoSource.add(rebasedPacket);
+      }
     }
-    await decodeSegmentIntoCanvas(segment.buffer, ctx, canvasSource, fps, absoluteFrame);
-    absoluteFrame += segment.durationFrames;
   }
 
   if (audioSrc) {
@@ -657,7 +731,6 @@ async function stitchSegments(
   }
 
   await output.finalize();
-  canvas.remove();
 
   if (!output.target.buffer) {
     throw new Error("Stitcher: output buffer is empty after finalization.");
@@ -670,6 +743,7 @@ async function stitchSegments(
       outputBytes: finalBlob.size,
       durationFrames: totalFrames,
       fps,
+      packetCount,
       estimatedDuration: (totalFrames / fps).toFixed(2),
     },
   });
@@ -686,7 +760,7 @@ async function stitchSegments(
  *
  * @example
  * ```ts
- * const batchRenderer = new BatchRenderer({segmentSize: 120, maxConcurrency: 4});
+ * const batchRenderer = new BatchRenderer({maxConcurrency: 4});
  * const {blob} = await batchRenderer.render(
  *   project,
  *   rendererSettings,
@@ -710,12 +784,12 @@ async function stitchSegments(
  * ```
  */
 export class BatchRenderer {
-  private readonly segmentSize: number;
+  private readonly legacySegmentSize?: number;
   private readonly maxConcurrency: number;
   private readonly onSegmentComplete?: BatchRendererOptions["onSegmentComplete"];
 
   public constructor(options: BatchRendererOptions = {}) {
-    this.segmentSize = options.segmentSize ?? 150;
+    this.legacySegmentSize = options.segmentSize;
     this.maxConcurrency =
       options.maxConcurrency ??
       Math.min(
@@ -760,35 +834,31 @@ export class BatchRenderer {
       throw new Error("BatchRenderer: requested range produced no frames.");
     }
 
-    // Validate segment size
-    if (this.segmentSize < 10) {
-      throw new Error(
-        `BatchRenderer: segment size must be at least 10 frames, got ${this.segmentSize}.`,
-      );
-    }
-
-    // Suggest optimal segment size based on animation duration
-    const optimalSegmentSize = calculateOptimalSegmentSize(totalFrames, settings.fps);
-    if (this.segmentSize > optimalSegmentSize * 2) {
+    if (this.legacySegmentSize !== undefined) {
       project.logger.warn({
-        message: "Batch: segment size is relatively large compared to animation duration",
+        message: "Batch: segmentSize option is deprecated and ignored. Automatic segmentation is used.",
         object: {
-          userSegmentSize: this.segmentSize,
-          recommendedSegmentSize: optimalSegmentSize,
-          reason: "Large segments reduce parallelism opportunities",
-          tip: `Consider using segment size of ${optimalSegmentSize} to create more segments`,
+          legacySegmentSize: this.legacySegmentSize,
         },
       });
     }
 
-    // Calculate and log render plan
-    const segmentRanges = splitIntoSegments(totalFrames, this.segmentSize);
+    const segmentSize = calculateOptimalSegmentSize(
+      totalFrames,
+      settings.fps,
+      this.maxConcurrency,
+    );
+
+    const segmentRanges = splitIntoSegments(totalFrames, segmentSize);
     const segmentCount = segmentRanges.length;
+    const effectiveConcurrency = Math.min(this.maxConcurrency, segmentCount);
     const renderPlan = {
       totalFrames,
-      segmentSize: this.segmentSize,
-      optimalSegmentSize,
+      segmentSize,
       segmentCount,
+      requestedConcurrency: this.maxConcurrency,
+      effectiveConcurrency,
+      executionMode: options.worker?.enabled ? "worker" : "main-thread",
       totalDuration: Number((totalFrames / settings.fps).toFixed(2)),
     };
 
@@ -838,7 +908,7 @@ export class BatchRenderer {
     const segmentResults = options.worker?.enabled
       ? await runWorkerClientPool(
         batchJobs,
-        this.maxConcurrency,
+        effectiveConcurrency,
         options.worker.bootstrap,
         (result, remaining) => this.onSegmentComplete?.(result, remaining),
       )
@@ -853,7 +923,7 @@ export class BatchRenderer {
             settingsMetaData,
           ),
         ),
-        this.maxConcurrency,
+        effectiveConcurrency,
         (result, remaining) => this.onSegmentComplete?.(result, remaining),
       );
 
@@ -867,8 +937,6 @@ export class BatchRenderer {
       totalFrames,
       settings.fps,
       playbackInfo.fromFrame,
-      resolution,
-      settings.resolutionScale,
       finalExporterOptions,
       projectConfig.audio,
       playbackInfo.audioOffset,
