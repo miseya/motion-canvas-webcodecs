@@ -107,7 +107,6 @@ class BatchWebCodecsExporter implements Exporter {
     }
 
     const batchRenderer = new BatchRenderer({
-      segmentSize: this.options.segmentSize,
       maxConcurrency: this.options.maxConcurrentWorkers,
       onSegmentComplete: (segment, remaining) => {
         const completed = segment.jobIndex + 1;
@@ -128,7 +127,6 @@ class BatchWebCodecsExporter implements Exporter {
       this.logger.info({
         message: "Batch rendering: starting orchestration phase",
         object: {
-          segmentSize: this.options.segmentSize,
           maxConcurrentWorkers: this.options.maxConcurrentWorkers,
         },
       });
@@ -236,17 +234,13 @@ class WebCodecsExporter implements Exporter {
 
     // --- Batch rendering ---
     const enableBatch = new BoolMetaField("enable batch rendering", false);
-    const segmentSize = new NumberMetaField("segment size (frames)", 150)
-      .setRange(10)
-      .disable(true);
-    const maxConcurrentWorkers = new NumberMetaField("max parallel workers", 4)
+    const maxConcurrentWorkers = new NumberMetaField("max parallel segments", 4)
       .setRange(1, 16)
       .disable(true);
 
     videoQuality.onChanged.subscribe((v) => videoBitrate.disable(v !== null));
     audioQuality.onChanged.subscribe((v) => audioBitrate.disable(v !== null));
     enableBatch.onChanged.subscribe((v) => {
-      segmentSize.disable(!v);
       maxConcurrentWorkers.disable(!v);
     });
 
@@ -264,7 +258,6 @@ class WebCodecsExporter implements Exporter {
       audioBitrate,
       renderOnAbort,
       enableBatch,
-      segmentSize,
       maxConcurrentWorkers,
     });
   }
