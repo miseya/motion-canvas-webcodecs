@@ -30,8 +30,8 @@
 
 ## Phase 5: Segment Stitching
 - [x] Implement segment validator / orderer
-- [ ] Implement container-level concat or remux step
-- [ ] Implement final output writer using mediabunny
+- [x] Implement container-level concat or remux step
+- [x] Implement final output writer using mediabunny
 
 ## Phase 6: Testing
 - [ ] Correctness test: single worker == sequential output

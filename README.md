@@ -45,12 +45,15 @@ them in parallel before stitching a single final MP4.
 Configure in exporter settings:
 
 - `enable batch rendering`
-- `segment size (frames)`
-- `max parallel workers`
+- `max parallel segments`
 
 Notes:
 
 - Batch rendering is opt-in and disabled by default.
+- Segment partitioning is computed automatically from animation duration and
+  parallelism settings.
+- Video stitching uses packet-level remux (no full decode/re-encode pass).
+- Remux validation is strict; incompatible or corrupt segment outputs fail fast.
 - Audio is mixed centrally during stitching for continuity across segment boundaries.
 - Segment rendering currently runs in the browser tab (no worker isolation yet).
 
