@@ -169,6 +169,7 @@ export class SegmentExporter implements Exporter {
     const frameDuration = 1 / this.settings.fps;
     const timestampInSecs = (frame - this.startFrame) / this.settings.fps;
 
+    this.internalCtx.clearRect(0, 0, canvas.width, canvas.height);
     this.internalCtx.drawImage(canvas, 0, 0);
     await this.canvasSource.add(timestampInSecs, frameDuration);
 

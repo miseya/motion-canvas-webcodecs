@@ -403,6 +403,7 @@ class WebCodecsExporter implements Exporter {
 
     const timestampInSecs = (frame - this.frameStart) / this.settings.fps;
 
+    this.canvasCtx.clearRect(0, 0, canvas.width, canvas.height);
     this.canvasCtx.drawImage(canvas, 0, 0);
     await this.canvasSource.add(timestampInSecs, this.frameDuration);
 
