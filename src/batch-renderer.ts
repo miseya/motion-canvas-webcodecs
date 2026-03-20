@@ -46,12 +46,6 @@ import {RenderWorkerClient} from "./worker-runner";
 
 export interface BatchRendererOptions {
   /**
-  * Deprecated. Segment sizing is now automatic and this option is ignored.
-  *
-  * Kept for compatibility with older serialized settings.
-   */
-  segmentSize?: number;
-  /**
    * Maximum number of segment renderers to run in parallel.
    * Defaults to `min(navigator.hardwareConcurrency, 4)`.
    */
@@ -430,7 +424,7 @@ interface SegmentVideoPackets {
   readonly decoderConfig: VideoDecoderConfig;
   readonly packets: mb.EncodedPacket[];
   readonly firstTimestamp: number;
-  readonly timelineOffsetSeconds: number;
+  readonly timelineOffsetFrames: number;
 }
 
 async function readSegmentVideoPackets(
@@ -490,7 +484,7 @@ async function readSegmentVideoPackets(
       decoderConfig,
       packets,
       firstTimestamp: packets[0]!.timestamp,
-      timelineOffsetSeconds: timelineOffsetFrames / fps,
+      timelineOffsetFrames,
     };
   } finally {
     input.dispose();
@@ -676,17 +670,49 @@ async function stitchSegments(
   let packetCount = 0;
   let sequenceNumber = 0;
   let firstPacket = true;
+  let hasSeenPacket = false;
+  let currentGopMaxTimestamp = Number.NEGATIVE_INFINITY;
+  let previousGopMaxTimestamp = Number.NEGATIVE_INFINITY;
+  const timestampEpsilonSeconds = 1e-9;
 
   for (const bundle of remuxBundles) {
     for (const packet of bundle.packets) {
+      const localFrameTick = Math.round((packet.timestamp - bundle.firstTimestamp) * fps);
+      const absoluteFrameTick = bundle.timelineOffsetFrames + localFrameTick;
+      let rebasedTimestamp = absoluteFrameTick / fps;
+
+      if (packet.type === "key") {
+        if (hasSeenPacket) {
+          previousGopMaxTimestamp = currentGopMaxTimestamp;
+        }
+
+        if (
+          previousGopMaxTimestamp !== Number.NEGATIVE_INFINITY &&
+          rebasedTimestamp < previousGopMaxTimestamp
+        ) {
+          const drift = previousGopMaxTimestamp - rebasedTimestamp;
+          if (drift <= timestampEpsilonSeconds) {
+            rebasedTimestamp = previousGopMaxTimestamp;
+          } else {
+            throw new Error(
+              `Stitcher: key packet timestamp regression in segment ${bundle.jobIndex}. Got ${rebasedTimestamp}s, previous GOP max is ${previousGopMaxTimestamp}s.`,
+            );
+          }
+        }
+
+        currentGopMaxTimestamp = rebasedTimestamp;
+      } else {
+        currentGopMaxTimestamp = Math.max(currentGopMaxTimestamp, rebasedTimestamp);
+      }
+
       const rebasedPacket = packet.clone({
-        timestamp:
-          packet.timestamp - bundle.firstTimestamp + bundle.timelineOffsetSeconds,
+        timestamp: rebasedTimestamp,
         sequenceNumber,
       });
 
       sequenceNumber += 1;
       packetCount += 1;
+      hasSeenPacket = true;
 
       if (firstPacket) {
         await videoSource.add(rebasedPacket, {
@@ -784,12 +810,10 @@ async function stitchSegments(
  * ```
  */
 export class BatchRenderer {
-  private readonly legacySegmentSize?: number;
   private readonly maxConcurrency: number;
   private readonly onSegmentComplete?: BatchRendererOptions["onSegmentComplete"];
 
   public constructor(options: BatchRendererOptions = {}) {
-    this.legacySegmentSize = options.segmentSize;
     this.maxConcurrency =
       options.maxConcurrency ??
       Math.min(
@@ -834,30 +858,35 @@ export class BatchRenderer {
       throw new Error("BatchRenderer: requested range produced no frames.");
     }
 
-    if (this.legacySegmentSize !== undefined) {
-      project.logger.warn({
-        message: "Batch: segmentSize option is deprecated and ignored. Automatic segmentation is used.",
-        object: {
-          legacySegmentSize: this.legacySegmentSize,
-        },
-      });
+    const requestedConcurrency = Math.max(1, Math.floor(this.maxConcurrency));
+    let segmentSize = totalFrames;
+    let segmentRanges: Array<[number, number]>;
+    let partitionMode: "single-range" | "segmented-parallel";
+
+    if (requestedConcurrency <= 1) {
+      segmentRanges = [[0, totalFrames]];
+      partitionMode = "single-range";
+    } else {
+      segmentSize = calculateOptimalSegmentSize(
+        totalFrames,
+        settings.fps,
+        requestedConcurrency,
+      );
+      segmentRanges = splitIntoSegments(totalFrames, segmentSize);
+      partitionMode = segmentRanges.length > 1
+        ? "segmented-parallel"
+        : "single-range";
     }
 
-    const segmentSize = calculateOptimalSegmentSize(
-      totalFrames,
-      settings.fps,
-      this.maxConcurrency,
-    );
-
-    const segmentRanges = splitIntoSegments(totalFrames, segmentSize);
     const segmentCount = segmentRanges.length;
-    const effectiveConcurrency = Math.min(this.maxConcurrency, segmentCount);
+    const effectiveConcurrency = Math.min(requestedConcurrency, segmentCount);
     const renderPlan = {
       totalFrames,
       segmentSize,
       segmentCount,
-      requestedConcurrency: this.maxConcurrency,
+      requestedConcurrency,
       effectiveConcurrency,
+      partitionMode,
       executionMode: options.worker?.enabled ? "worker" : "main-thread",
       totalDuration: Number((totalFrames / settings.fps).toFixed(2)),
     };
