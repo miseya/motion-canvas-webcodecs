@@ -36,7 +36,11 @@ import type {
   BatchRenderSegmentResult,
   BatchWorkerBootstrap,
 } from "./batch-types";
-import {SegmentExporter, type SegmentExporterOptions} from "./segment-exporter";
+import type {SegmentExporterOptions} from "./segment-exporter";
+import {
+  renderSegmentTask,
+  type SegmentRenderTaskEnvironment,
+} from "./segment-render-task";
 import {splitIntoSegments, validateAndOrderSegments} from "./segment-utils";
 import {RenderWorkerClient} from "./worker-runner";
 
@@ -194,86 +198,6 @@ function createDetachedMetaFiles(
   settingsFile.loadData(settingsMetaData as any);
 
   return {metaFile, settingsFile};
-}
-
-// ---------------------------------------------------------------------------
-// Single-segment render
-// ---------------------------------------------------------------------------
-
-/**
- * Bootstrap an isolated project instance and render the given frame range via
- * a {@link SegmentExporter}.  No state is shared with other segments.
- */
-async function renderSegment(
-  job: BatchRenderJob,
-  projectConfig: ProjectSettings,
-  plugins: Plugin[],
-  exporterOptions: SegmentExporterOptions,
-  projectMetaData: unknown,
-  settingsMetaData: unknown,
-): Promise<BatchRenderSegmentResult> {
-  const [startFrame, endFrame] = job.frameRange;
-  const startSec = startFrame / job.fps;
-  const endSec = endFrame / job.fps;
-
-  const {metaFile, settingsFile} = createDetachedMetaFiles(
-    `batch-segment-${job.jobIndex}`,
-    projectMetaData,
-    settingsMetaData,
-  );
-
-  const logger = new Logger();
-  const project = bootstrap(
-    projectConfig.name ?? "project",
-    {core: "0.0.0", two: null, ui: null, vitePlugin: null},
-    plugins,
-    projectConfig,
-    metaFile,
-    settingsFile,
-    logger,
-  );
-
-  const rendererSettings = {
-    name: project.name,
-    range: [startSec, endSec] as [number, number],
-    fps: job.fps,
-    size: new Vector2(job.resolution.width, job.resolution.height),
-    resolutionScale: job.resolutionScale,
-    colorSpace: "srgb" as const,
-    background: null,
-    exporter: {name: "batch-segment", options: exporterOptions},
-  };
-
-  const segmentExporter = new SegmentExporter(project, rendererSettings, exporterOptions);
-
-  // Inject the exporter shim so Renderer.run() can resolve it by name.
-  const exporterShim = {
-    id: "batch-segment" as const,
-    displayName: "Batch Segment",
-    meta: () => { throw new Error("unreachable"); },
-    create: async () => segmentExporter,
-  };
-  (project.meta.rendering.exporter as any).exporters ??= [];
-  (project.meta.rendering.exporter as any).exporters.push(exporterShim);
-
-  const renderer = new Renderer(project);
-
-  let error: string | undefined;
-  try {
-    await renderer.render(rendererSettings);
-  } catch (e: any) {
-    error = e?.message ?? String(e);
-  }
-
-  const buffer = segmentExporter.resultBuffer;
-
-  return {
-    jobIndex: job.jobIndex,
-    frameRange: job.frameRange,
-    buffer: buffer ?? new ArrayBuffer(0),
-    durationFrames: endFrame - startFrame,
-    error: error ?? (!buffer ? "Segment produced no output" : undefined),
-  };
 }
 
 // ---------------------------------------------------------------------------
@@ -887,7 +811,7 @@ export class BatchRenderer {
       requestedConcurrency,
       effectiveConcurrency,
       partitionMode,
-      executionMode: options.worker?.enabled ? "worker" : "main-thread",
+      executionModeRequested: options.worker?.enabled ? "worker" : "main-thread",
       totalDuration: Number((totalFrames / settings.fps).toFixed(2)),
     };
 
@@ -934,27 +858,125 @@ export class BatchRenderer {
       frameRange: [start, end] as [number, number],
     }));
 
-    const segmentResults = options.worker?.enabled
-      ? await runWorkerClientPool(
-        batchJobs,
-        effectiveConcurrency,
-        options.worker.bootstrap,
-        (result, remaining) => this.onSegmentComplete?.(result, remaining),
-      )
-      : await runPool(
-        batchJobs.map(j => () =>
-          renderSegment(
-            j,
-            projectConfig,
-            project.plugins,
-            segmentExporterOptions,
-            projectMetaData,
-            settingsMetaData,
-          ),
-        ),
-        effectiveConcurrency,
-        (result, remaining) => this.onSegmentComplete?.(result, remaining),
-      );
+    const segmentTaskEnvironment: SegmentRenderTaskEnvironment = {
+      projectConfig,
+      plugins: project.plugins,
+      exporterOptions: segmentExporterOptions,
+      projectMetaData,
+      settingsMetaData,
+    };
+
+    const runMainThreadJobs = (
+      jobs: BatchRenderJob[],
+      reportProgress: boolean,
+    ) => runPool(
+      jobs.map(job => () => renderSegmentTask(job, segmentTaskEnvironment)),
+      Math.min(effectiveConcurrency, jobs.length || 1),
+      reportProgress
+        ? ((result, remaining) => this.onSegmentComplete?.(result, remaining))
+        : undefined,
+    );
+
+    const runMainThreadSegments = () => runMainThreadJobs(batchJobs, true);
+
+    let resolvedExecutionMode: "main-thread" | "worker" = "main-thread";
+    let fallbackReason: string | null = null;
+    let segmentResults: BatchRenderSegmentResult[];
+
+    if (options.worker?.enabled) {
+      const workerBootstrap: BatchWorkerBootstrap = {
+        ...options.worker.bootstrap,
+        protocolVersion: options.worker.bootstrap.protocolVersion ?? 1,
+        projectMetaData:
+          options.worker.bootstrap.projectMetaData ?? projectMetaData,
+        settingsMetaData:
+          options.worker.bootstrap.settingsMetaData ?? settingsMetaData,
+        segmentExporterOptions:
+          options.worker.bootstrap.segmentExporterOptions ??
+          segmentExporterOptions,
+      };
+
+      try {
+        const workerResults = await runWorkerClientPool(
+          batchJobs,
+          effectiveConcurrency,
+          workerBootstrap,
+          (result, remaining) => this.onSegmentComplete?.(result, remaining),
+        );
+
+        const erroredSegments = workerResults.filter(segment => !!segment.error);
+        if (erroredSegments.length > 0) {
+          fallbackReason =
+            `worker produced ${erroredSegments.length} errored segment(s)`;
+          project.logger.warn({
+            message:
+              "Batch: worker rendering produced errored segments; falling back to main-thread execution.",
+            object: {
+              erroredJobIndexes: erroredSegments.map(segment => segment.jobIndex),
+            },
+          });
+
+          const erroredJobIndexes = new Set(
+            erroredSegments.map(segment => segment.jobIndex),
+          );
+          const retryJobs = batchJobs.filter(job => erroredJobIndexes.has(job.jobIndex));
+
+          const retryResults = await runMainThreadJobs(retryJobs, false);
+          const merged = new Map<number, BatchRenderSegmentResult>();
+          for (const segment of workerResults) {
+            if (!segment.error) {
+              merged.set(segment.jobIndex, segment);
+            }
+          }
+          for (const segment of retryResults) {
+            merged.set(segment.jobIndex, segment);
+          }
+
+          segmentResults = batchJobs.map(job => {
+            const segment = merged.get(job.jobIndex);
+            if (!segment) {
+              throw new Error(
+                `Batch: missing merged segment for job ${job.jobIndex} after fallback retry.`,
+              );
+            }
+
+            return segment;
+          });
+
+          project.logger.info({
+            message: "Batch: fallback rerender complete for failed worker segments.",
+            object: {
+              retriedSegments: retryJobs.length,
+            },
+          });
+        } else {
+          resolvedExecutionMode = "worker";
+          segmentResults = workerResults;
+        }
+      } catch (error) {
+        const object = error as Error;
+        fallbackReason = object?.message ?? "unknown worker failure";
+        project.logger.warn({
+          message:
+            "Batch: worker rendering failed during execution; falling back to main-thread execution.",
+          stack: object?.stack,
+          object,
+        });
+
+        segmentResults = await runMainThreadSegments();
+      }
+    } else {
+      segmentResults = await runMainThreadSegments();
+    }
+
+    project.logger.info({
+      message: "Batch segment execution complete",
+      object: {
+        executionModeRequested: options.worker?.enabled ? "worker" : "main-thread",
+        executionModeResolved: resolvedExecutionMode,
+        fallbackReason,
+      },
+    });
 
     const finalExporterOptions: SegmentExporterOptions = {
       ...segmentExporterOptions,

@@ -46,16 +46,21 @@ Configure in exporter settings:
 
 - `enable batch rendering`
 - `max parallel segments`
+- `batch execution mode` (`main thread` or `worker (experimental)`)
+- `worker project module url` (optional; auto-discovered in editor mode)
 
 Notes:
 
 - Batch rendering is opt-in and disabled by default.
 - Segment partitioning is computed automatically from animation duration and
   parallelism settings.
+- Worker mode performs a compatibility preflight and falls back to main-thread
+  batch rendering if worker bootstrap/runtime requirements are not met.
 - Video stitching uses packet-level remux (no full decode/re-encode pass).
 - Remux validation is strict; incompatible or corrupt segment outputs fail fast.
 - Audio is mixed centrally during stitching for continuity across segment boundaries.
-- Segment rendering currently runs in the browser tab (no worker isolation yet).
+- Worker mode is experimental and may still fall back to main-thread execution
+  depending on browser support and project/runtime compatibility.
 
 ## Compatibility
 

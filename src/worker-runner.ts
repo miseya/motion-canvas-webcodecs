@@ -8,6 +8,7 @@ import type {
 
 export interface WorkerRunnerOptions {
   workerFactory?: () => Worker;
+  requestTimeoutMs?: number;
 }
 
 type PendingRequest = {
@@ -75,7 +76,7 @@ export class RenderWorkerClient {
     if (this.worker) return;
 
     this.worker = this.options.workerFactory?.() ??
-      new Worker(new URL("./render-worker.ts", import.meta.url), {
+      new Worker(new URL("./render-worker.js", import.meta.url), {
         type: "module",
       });
 
@@ -113,7 +114,30 @@ export class RenderWorkerClient {
     }
 
     return new Promise((resolve, reject) => {
-      this.pending.set(request.requestId, {resolve, reject});
+      const timeoutMs = this.options.requestTimeoutMs ?? 30_000;
+      const timeout = setTimeout(() => {
+        this.pending.delete(request.requestId);
+        reject(
+          new Error(
+            `RenderWorkerClient: request ${request.requestId} timed out after ${timeoutMs}ms.`,
+          ),
+        );
+      }, timeoutMs);
+
+      const originalResolve = resolve;
+      const originalReject = reject;
+
+      this.pending.set(request.requestId, {
+        resolve: message => {
+          clearTimeout(timeout);
+          originalResolve(message);
+        },
+        reject: error => {
+          clearTimeout(timeout);
+          originalReject(error);
+        },
+      });
+
       this.worker!.postMessage(request);
     });
   }

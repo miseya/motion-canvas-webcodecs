@@ -9,6 +9,7 @@ import {
   EnumMetaField,
   NumberMetaField,
   ObjectMetaField,
+  StringMetaField,
   ValueOf,
   Project,
 } from "@motion-canvas/core";
@@ -21,8 +22,12 @@ import {
   CanvasSource,
 } from "mediabunny";
 import * as mb from "mediabunny";
-import {BatchRenderer, type BatchRendererOptions} from "./batch-renderer";
-import type {BatchRenderJob} from "./batch-types";
+import {
+  BatchRenderer,
+  type BatchRenderRuntimeOptions,
+  type BatchRendererOptions,
+} from "./batch-renderer";
+import type {BatchRenderJob, BatchWorkerBootstrap} from "./batch-types";
 
 /**
  * Taken from motion-canvas alpha for compatibility
@@ -41,6 +46,8 @@ interface Sound {
 type WebCodecsExportOptions = ValueOf<
   ReturnType<typeof WebCodecsExporter.meta>
 >;
+
+type BatchExecutionMode = "main-thread" | "worker-experimental";
 
 function downloadBlobAsMp4(blob: Blob, name: string): void {
   const url = URL.createObjectURL(blob);
@@ -94,6 +101,133 @@ class BatchWebCodecsExporter implements Exporter {
     if (!this.abortSignal) this.abortSignal = signal;
   }
 
+  private inferProjectModuleUrlFromResources(): string | undefined {
+    if (typeof performance === "undefined" || typeof window === "undefined") {
+      return undefined;
+    }
+
+    const resources = performance.getEntriesByType("resource") as PerformanceResourceTiming[];
+    for (const entry of resources) {
+      if (!entry.name.includes("?project")) continue;
+
+      try {
+        const url = new URL(entry.name, window.location.href);
+        return url.toString();
+      } catch {
+        // ignore malformed entries
+      }
+    }
+
+    return undefined;
+  }
+
+  private async inferProjectModuleUrlFromEditorScript(): Promise<string | undefined> {
+    if (typeof document === "undefined" || typeof window === "undefined") {
+      return undefined;
+    }
+
+    const scriptUrls = Array.from(
+      document.querySelectorAll("script[type='module'][src]"),
+    )
+      .map((script) => script.getAttribute("src"))
+      .filter((value): value is string => !!value)
+      .sort((a, b) => {
+        const score = (value: string) =>
+          value.includes("virtual:editor") || value.includes("__x00__virtual:editor")
+            ? 0
+            : 1;
+        return score(a) - score(b);
+      });
+
+    const importRegex = /import\s+project\s+from\s+["']([^"']+\?project[^"']*)["']/;
+
+    for (const src of scriptUrls) {
+      try {
+        const moduleUrl = new URL(src, window.location.href).toString();
+        const response = await fetch(moduleUrl);
+        if (!response.ok) continue;
+
+        const code = await response.text();
+        const match = code.match(importRegex);
+        if (!match || !match[1]) continue;
+
+        return new URL(match[1], moduleUrl).toString();
+      } catch {
+        // move to next script candidate
+      }
+    }
+
+    return this.inferProjectModuleUrlFromResources();
+  }
+
+  private async resolveWorkerProjectModuleUrl(): Promise<string | undefined> {
+    const explicit = (this.options.workerProjectModuleUrl ?? "").trim();
+    if (explicit) {
+      return explicit;
+    }
+
+    const discovered = await this.inferProjectModuleUrlFromEditorScript();
+    if (discovered) {
+      this.logger.info({
+        message: "Batch worker mode: auto-discovered project module URL.",
+        object: {
+          projectModuleUrl: discovered,
+        },
+      });
+    }
+
+    return discovered;
+  }
+
+  private async createWorkerRuntimeOptions(): Promise<BatchRenderRuntimeOptions["worker"] | undefined> {
+    const mode = (this.options.batchExecutionMode ?? "main-thread") as BatchExecutionMode;
+    if (mode !== "worker-experimental") {
+      return undefined;
+    }
+
+    if (typeof Worker === "undefined") {
+      this.logger.warn(
+        "Batch worker mode requested, but Worker API is unavailable. Falling back to main-thread execution.",
+      );
+      return undefined;
+    }
+
+    if (typeof OffscreenCanvas === "undefined") {
+      this.logger.warn(
+        "Batch worker mode requested, but OffscreenCanvas is unavailable. Falling back to main-thread execution.",
+      );
+      return undefined;
+    }
+
+    const projectModuleUrl = await this.resolveWorkerProjectModuleUrl();
+    if (!projectModuleUrl) {
+      this.logger.warn(
+        "Batch worker mode requested, but worker project module URL is missing and auto-discovery failed. Falling back to main-thread execution.",
+      );
+      return undefined;
+    }
+
+    const bootstrap: BatchWorkerBootstrap = {
+      protocolVersion: 1,
+      projectModuleUrl,
+      projectMetaData: this.project.meta.get(),
+      settingsMetaData: this.project.settings.get(),
+      locationHref:
+        typeof window !== "undefined" ? window.location.toString() : undefined,
+      shimOptions: {
+        enableDocumentShim: true,
+        enableWindowShim: true,
+        enableImageShim: true,
+        enableAnimationFrameShim: true,
+      },
+    };
+
+    return {
+      enabled: true,
+      bootstrap,
+    };
+  }
+
   public async stop(result: RendererResult): Promise<void> {
     if (result === RendererResult.Error) {
       return;
@@ -123,24 +257,37 @@ class BatchWebCodecsExporter implements Exporter {
       },
     });
 
+    const workerRuntime = await this.createWorkerRuntimeOptions();
+    const runtimeOptions: BatchRenderRuntimeOptions = {
+      videoCodec: this.options.videoCodec,
+      videoQuality: this.options.videoQuality,
+      videoBitrate: this.options.videoBitrate,
+      audioCodec: this.options.audioCodec,
+      audioQuality: this.options.audioQuality,
+      audioBitrate: this.options.audioBitrate,
+      includeAudio: this.options.includeAudio,
+      audioVolume: this.options.audioVolume,
+    };
+
+    if (workerRuntime) {
+      runtimeOptions.worker = workerRuntime;
+    }
+
     try {
       this.logger.info({
         message: "Batch rendering: starting orchestration phase",
         object: {
           maxConcurrentWorkers: this.options.maxConcurrentWorkers,
+          batchExecutionMode: this.options.batchExecutionMode ?? "main-thread",
+          workerEnabled: !!workerRuntime,
         },
       });
 
-      const {blob} = await batchRenderer.render(this.project, this.settings, {
-        videoCodec: this.options.videoCodec,
-        videoQuality: this.options.videoQuality,
-        videoBitrate: this.options.videoBitrate,
-        audioCodec: this.options.audioCodec,
-        audioQuality: this.options.audioQuality,
-        audioBitrate: this.options.audioBitrate,
-        includeAudio: this.options.includeAudio,
-        audioVolume: this.options.audioVolume,
-      });
+      const {blob} = await batchRenderer.render(
+        this.project,
+        this.settings,
+        runtimeOptions,
+      );
 
       this.logger.info({
         message: "Batch rendering: orchestration complete, exporting video",
@@ -237,11 +384,35 @@ class WebCodecsExporter implements Exporter {
     const maxConcurrentWorkers = new NumberMetaField("max parallel segments", 4)
       .setRange(1, 16)
       .disable(true);
+    const batchExecutionMode = new EnumMetaField<BatchExecutionMode>(
+      "batch execution mode",
+      [
+        {text: "main thread", value: "main-thread"},
+        {text: "worker (experimental)", value: "worker-experimental"},
+      ],
+      "main-thread",
+    ).disable(true);
+    const workerProjectModuleUrl = new StringMetaField(
+      "worker project module url",
+      "",
+    )
+      .describe(
+        "Optional absolute URL to the project module export for worker rendering. Leave empty to auto-discover in editor mode.",
+      )
+      .disable(true);
 
     videoQuality.onChanged.subscribe((v) => videoBitrate.disable(v !== null));
     audioQuality.onChanged.subscribe((v) => audioBitrate.disable(v !== null));
     enableBatch.onChanged.subscribe((v) => {
       maxConcurrentWorkers.disable(!v);
+      batchExecutionMode.disable(!v);
+      const workerMode = v && batchExecutionMode.get() === "worker-experimental";
+      workerProjectModuleUrl.disable(!workerMode);
+    });
+    batchExecutionMode.onChanged.subscribe((mode) => {
+      const workerMode =
+        enableBatch.get() && mode === "worker-experimental";
+      workerProjectModuleUrl.disable(!workerMode);
     });
 
     // Audio codec/quality options are always enabled since sound effects may be present
@@ -259,6 +430,8 @@ class WebCodecsExporter implements Exporter {
       renderOnAbort,
       enableBatch,
       maxConcurrentWorkers,
+      batchExecutionMode,
+      workerProjectModuleUrl,
     });
   }
 

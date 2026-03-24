@@ -1,10 +1,19 @@
-import type {ProjectSettings} from "@motion-canvas/core";
+import type {Plugin, ProjectSettings} from "@motion-canvas/core";
 import type {
+  BatchRenderJob,
   BatchRenderSegmentResult,
   BatchWorkerBootstrap,
   RenderWorkerRequest,
   RenderWorkerResponse,
 } from "./batch-types";
+import type {SegmentExporterOptions} from "./segment-exporter";
+import {
+  renderSegmentTask,
+  type SegmentRenderTaskEnvironment,
+} from "./segment-render-task.js";
+import {installWorkerCompatibilityShims} from "./worker-shims.js";
+
+const WORKER_PROTOCOL_VERSION = 1;
 
 interface RenderWorkerState {
   initialized: boolean;
@@ -49,7 +58,41 @@ async function loadProjectConfig(moduleUrl: string): Promise<ProjectSettings> {
   return candidate as ProjectSettings;
 }
 
+function fallbackSegmentExporterOptions(job: BatchRenderJob): SegmentExporterOptions {
+  return {
+    videoCodec: job.videoCodec as any,
+    videoQuality: job.videoQuality,
+    videoBitrate: job.videoBitrate,
+    audioCodec: job.audioCodec as any,
+    audioQuality: job.audioQuality,
+    audioBitrate: job.audioBitrate,
+    includeAudio: false,
+    audioVolume: job.audioVolume,
+    renderOnAbort: false,
+  };
+}
+
 async function handleInit(requestId: string, payload: BatchWorkerBootstrap): Promise<void> {
+  if (
+    payload.protocolVersion !== undefined &&
+    payload.protocolVersion !== WORKER_PROTOCOL_VERSION
+  ) {
+    throw new Error(
+      `RenderWorker: protocol mismatch. Worker=${WORKER_PROTOCOL_VERSION}, caller=${payload.protocolVersion}.`,
+    );
+  }
+
+  if (typeof OffscreenCanvas === "undefined") {
+    throw new Error(
+      "RenderWorker: OffscreenCanvas is unavailable in this environment.",
+    );
+  }
+
+  installWorkerCompatibilityShims({
+    locationHref: payload.locationHref,
+    options: payload.shimOptions,
+  });
+
   state.bootstrap = payload;
   state.projectConfig = await loadProjectConfig(payload.projectModuleUrl);
   state.initialized = true;
@@ -62,9 +105,9 @@ async function handleInit(requestId: string, payload: BatchWorkerBootstrap): Pro
 
 async function handleRenderSegment(
   requestId: string,
-  payload: {job: {jobIndex: number; frameRange: [number, number]}},
+  payload: {job: BatchRenderJob},
 ): Promise<void> {
-  if (!state.initialized || !state.projectConfig) {
+  if (!state.initialized || !state.projectConfig || !state.bootstrap) {
     postMessage({
       type: "error",
       requestId,
@@ -73,18 +116,24 @@ async function handleRenderSegment(
     return;
   }
 
-  const [startFrame, endFrame] = payload.job.frameRange;
-
-  // Current worker scaffold intentionally reports a descriptive error because
-  // Motion Canvas Stage/WebGL still requires document-backed canvas creation.
-  const result: BatchRenderSegmentResult = {
-    jobIndex: payload.job.jobIndex,
-    frameRange: [startFrame, endFrame],
-    buffer: new ArrayBuffer(0),
-    durationFrames: endFrame - startFrame,
-    error:
-      "RenderWorker scaffold is active, but worker rendering is not yet supported without OffscreenCanvas-compatible Stage/WebGL abstractions.",
+  const environment: SegmentRenderTaskEnvironment = {
+    projectConfig: state.projectConfig,
+    plugins: (state.projectConfig.plugins ?? []).filter(
+      (plugin): plugin is Plugin => typeof plugin !== "string",
+    ),
+    exporterOptions:
+      state.bootstrap.segmentExporterOptions ??
+      fallbackSegmentExporterOptions(payload.job),
+    projectMetaData: state.bootstrap.projectMetaData ?? {},
+    settingsMetaData: state.bootstrap.settingsMetaData ?? {},
   };
+
+  const startedAt = performance.now();
+  const result: BatchRenderSegmentResult = await renderSegmentTask(
+    payload.job,
+    environment,
+  );
+  result.totalTimeMs = Math.max(0, performance.now() - startedAt);
 
   postMessage(
     {

@@ -1,3 +1,5 @@
+import type {SegmentExporterOptions} from "./segment-exporter";
+
 /**
  * Input contract for a single batch render segment job.
  */
@@ -49,6 +51,8 @@ export interface BatchRenderSegmentResult {
   durationFrames: number;
   /** Set if the job failed. */
   error?: string;
+  /** Total runtime spent rendering/encoding this segment in ms. */
+  totalTimeMs?: number;
 }
 
 /**
@@ -69,9 +73,24 @@ export interface BatchRenderResult {
  * The worker imports the project module dynamically from `projectModuleUrl`.
  */
 export interface BatchWorkerBootstrap {
+  /** Protocol revision to detect incompatible worker/client payloads. */
+  protocolVersion?: number;
   projectModuleUrl: string;
-  projectMetaData: unknown;
-  settingsMetaData: unknown;
+  projectMetaData?: unknown;
+  settingsMetaData?: unknown;
+  /** Segment exporter settings used by worker-rendered jobs. */
+  segmentExporterOptions?: SegmentExporterOptions;
+  /** Optional URL used by worker shims for location-dependent APIs. */
+  locationHref?: string;
+  /** Worker compatibility shims toggles. */
+  shimOptions?: WorkerShimOptions;
+}
+
+export interface WorkerShimOptions {
+  enableDocumentShim?: boolean;
+  enableWindowShim?: boolean;
+  enableImageShim?: boolean;
+  enableAnimationFrameShim?: boolean;
 }
 
 export interface RenderWorkerInitRequest {
