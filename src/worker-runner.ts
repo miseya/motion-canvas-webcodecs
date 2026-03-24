@@ -6,6 +6,9 @@ import type {
   RenderWorkerResponse,
 } from "./batch-types";
 
+// @ts-ignore - Vite handles ?worker&inline imports
+import InlineRenderWorker from "./render-worker?worker&inline";
+
 export interface WorkerRunnerOptions {
   workerFactory?: () => Worker;
   requestTimeoutMs?: number;
@@ -75,10 +78,7 @@ export class RenderWorkerClient {
   private ensureWorker(): void {
     if (this.worker) return;
 
-    this.worker = this.options.workerFactory?.() ??
-      new Worker(new URL("./render-worker.js", import.meta.url), {
-        type: "module",
-      });
+    this.worker = this.options.workerFactory?.() ?? new InlineRenderWorker();
 
     this.worker.addEventListener("message", event => {
       const data = event.data as RenderWorkerResponse;
