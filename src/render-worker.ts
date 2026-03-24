@@ -72,6 +72,26 @@ function fallbackSegmentExporterOptions(job: BatchRenderJob): SegmentExporterOpt
   };
 }
 
+function installWebGLWorkerGuard(): void {
+  if (typeof OffscreenCanvas === "undefined") return;
+
+  const originalGetContext = OffscreenCanvas.prototype.getContext;
+  OffscreenCanvas.prototype.getContext = function (
+    this: OffscreenCanvas,
+    contextId: string,
+    options?: any,
+  ) {
+    if (contextId === "webgl2" || contextId === "webgl") {
+      throw new Error(
+        `RenderWorker: WebGL context ('${contextId}') is not supported in worker mode. ` +
+          "Shaders require main-thread batch rendering. " +
+          "Set batch execution mode to 'main thread' to use shaders.",
+      );
+    }
+    return originalGetContext.call(this, contextId as any, options);
+  } as typeof OffscreenCanvas.prototype.getContext;
+}
+
 async function handleInit(requestId: string, payload: BatchWorkerBootstrap): Promise<void> {
   if (
     payload.protocolVersion !== undefined &&
@@ -92,6 +112,8 @@ async function handleInit(requestId: string, payload: BatchWorkerBootstrap): Pro
     locationHref: payload.locationHref,
     options: payload.shimOptions,
   });
+
+  installWebGLWorkerGuard();
 
   state.bootstrap = payload;
   state.projectConfig = await loadProjectConfig(payload.projectModuleUrl);
