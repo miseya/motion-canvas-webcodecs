@@ -219,6 +219,7 @@ class BatchWebCodecsExporter implements Exporter {
         enableWindowShim: true,
         enableImageShim: true,
         enableAnimationFrameShim: true,
+        enableGetComputedStyleShim: true,
       },
     };
 

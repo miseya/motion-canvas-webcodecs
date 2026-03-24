@@ -91,6 +91,7 @@ export interface WorkerShimOptions {
   enableWindowShim?: boolean;
   enableImageShim?: boolean;
   enableAnimationFrameShim?: boolean;
+  enableGetComputedStyleShim?: boolean;
 }
 
 export interface RenderWorkerInitRequest {
