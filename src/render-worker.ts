@@ -108,6 +108,7 @@ async function handleInit(requestId: string, payload: BatchWorkerBootstrap): Pro
     );
   }
 
+  console.debug("[RenderWorker] Installing compatibility shims...");
   installWorkerCompatibilityShims({
     locationHref: payload.locationHref,
     options: payload.shimOptions,
@@ -116,9 +117,11 @@ async function handleInit(requestId: string, payload: BatchWorkerBootstrap): Pro
   installWebGLWorkerGuard();
 
   state.bootstrap = payload;
+  console.debug("[RenderWorker] Loading project config from:", payload.projectModuleUrl);
   state.projectConfig = await loadProjectConfig(payload.projectModuleUrl);
   state.initialized = true;
 
+  console.debug("[RenderWorker] Initialized successfully with", state.projectConfig.scenes?.length ?? 0, "scenes");
   postMessage({
     type: "ready",
     requestId,
@@ -138,6 +141,11 @@ async function handleRenderSegment(
     return;
   }
 
+  const job = payload.job;
+  console.debug(
+    `[RenderWorker] Rendering segment ${job.jobIndex}: frames ${job.frameRange[0]}-${job.frameRange[1]}`,
+  );
+
   const environment: SegmentRenderTaskEnvironment = {
     projectConfig: state.projectConfig,
     plugins: (state.projectConfig.plugins ?? []).filter(
@@ -156,6 +164,11 @@ async function handleRenderSegment(
     environment,
   );
   result.totalTimeMs = Math.max(0, performance.now() - startedAt);
+
+  console.debug(
+    `[RenderWorker] Segment ${job.jobIndex} complete in ${result.totalTimeMs?.toFixed(0)}ms, ` +
+    `buffer size: ${result.buffer.byteLength} bytes, error: ${result.error ?? "none"}`,
+  );
 
   postMessage(
     {
